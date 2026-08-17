@@ -1,0 +1,22 @@
+# Archivos de compilación de LaTeX
+report/*.aux
+report/*.bbl
+report/*.blg
+report/*.log
+report/*.out
+report/*.toc
+report/*.lof
+report/*.lot
+report/*.fls
+report/*.fdb_latexmk
+report/*.synctex.gz
+report/*.pdf
+
+# Builds de PlatformIO
+.pio/
+.vscode/
+
+# Archivos de Arduino
+firmware/**/build/
+*.elf
+*.hex

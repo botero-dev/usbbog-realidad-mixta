@@ -1,0 +1,58 @@
+% ============================================================
+%  main.tex — Informe del proyecto
+%  Control de un carro con Arduino/ESP32
+% ============================================================
+\documentclass[12pt,a4paper]{article}
+
+% --- Paquetes ---
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish]{babel}
+\usepackage{geometry}
+\geometry{margin=2.5cm}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+
+% --- Estilo para código ---
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  keywordstyle=\color{blue},
+  commentstyle=\color{gray},
+  stringstyle=\color{red},
+  showstringspaces=false
+}
+
+% --- Metadatos ---
+\title{Control de un Carro Robótico con Arduino/ESP32}
+\author{Tu Nombre}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Resumen del proyecto: aquí se describe brevemente el objetivo,
+la metodología y los resultados obtenidos.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\input{chapters/introduccion}
+\input{chapters/marco}
+\input{chapters/metodologia}
+\input{chapters/resultados}
+\input{chapters/conclusiones}
+
+% --- Bibliografía ---
+\bibliographystyle{plain}
+\bibliography{references}
+
+\end{document}
