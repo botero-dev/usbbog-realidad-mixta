@@ -1,15 +1,14 @@
 % ============================================================
 %  main.tex — Informe del proyecto
 %  Control de un carro con Arduino/ESP32
+%  Formato: IEEE (clase IEEEtran, conferencia)
 % ============================================================
-\documentclass[12pt,a4paper]{article}
+\documentclass[conference]{IEEEtran}
 
 % --- Paquetes ---
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
 \usepackage[spanish]{babel}
-\usepackage{geometry}
-\geometry{margin=2.5cm}
 \usepackage{graphicx}
 \usepackage{amsmath}
 \usepackage{booktabs}
@@ -30,8 +29,14 @@
 
 % --- Metadatos ---
 \title{Control de un Carro Robótico con Arduino/ESP32}
-\author{Tu Nombre}
-\date{\today}
+
+\author{
+\IEEEauthorblockN{Tu Nombre}
+\IEEEauthorblockA{Departamento / Facultad\\
+Universidad\\
+Ciudad, País\\
+correo@ejemplo.com}
+}
 
 \begin{document}
 
@@ -42,8 +47,9 @@ Resumen del proyecto: aquí se describe brevemente el objetivo,
 la metodología y los resultados obtenidos.
 \end{abstract}
 
-\tableofcontents
-\newpage
+\begin{IEEEkeywords}
+Arduino, ESP32, robótica móvil, control de motores.
+\end{IEEEkeywords}
 
 \input{chapters/introduccion}
 \input{chapters/marco}
@@ -52,7 +58,8 @@ la metodología y los resultados obtenidos.
 \input{chapters/conclusiones}
 
 % --- Bibliografía ---
-\bibliographystyle{plain}
+\nocite{*} % Incluye todas las referencias aunque no se citen aún
+\bibliographystyle{IEEEtran}
 \bibliography{references}
 
 \end{document}
