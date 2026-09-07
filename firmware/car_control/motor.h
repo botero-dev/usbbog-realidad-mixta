@@ -3,7 +3,7 @@
 
 #include <Arduino.h>
 
-const int PWM_FREQ = 5000;
+const int PWM_FREQ = 2000;
 const int PWM_BITS = 8;
 
 struct Motor {
