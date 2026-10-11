@@ -76,8 +76,15 @@ configuration to do.
 
 **Hardware confirmed 2026-10-11:** a PCM5102A plus a class-D amp — the `U6`/`U7` pair
 exactly as the schematic draws it, so no schematic change was needed. The camera is
-deliberately excluded from this stage (audio on its own first), so PSRAM stays off, which
-is the decision already recorded in `docs/esp32-cam.md` §10 item 2.
+deliberately excluded from this stage (audio on its own first) and lives in its own
+project, `firmware/cam-test/`.
+
+> **Corrected 2026-10-11 — this paragraph used to say "so PSRAM stays off", and that was
+> wrong.** PSRAM is *not* controlled by a flag in `platformio.ini`: the Freenove board def
+> sets `-DBOARD_HAS_PSRAM` (with `memory_type = qio_opi`) in its own `extra_flags`, so the
+> core initialises it at boot regardless. The unchanged decision is narrower than the old
+> wording implied — **PSRAM is not used for frame buffers in this project**, because there
+> is no camera here. See `docs/esp32-cam.md` §10 item 2 and `firmware/cam-test/`.
 
 ---
 

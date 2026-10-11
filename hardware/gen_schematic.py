@@ -3,7 +3,7 @@
 Generate hardware/car.kicad_sch for the mixed-reality RC car.
 
 Architecture (see docs/circuit-plan.md):
-    ESP32-S3-CAM  = brain: WiFi, OV2640 camera, I2S audio, BMI160, control loop
+    ESP32-S3-CAM  = brain: WiFi, OV3660 camera, I2S audio, BMI160, control loop
     RP2040 Pico   = dumb PWM splitter: 4 x 20 kHz PWM + 8 direction lines + STBY
 
 Design notes

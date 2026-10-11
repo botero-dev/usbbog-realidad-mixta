@@ -41,7 +41,7 @@ flowchart LR
   LM --> PICO["RP2040 Pico<br/>PWM splitter"]
   LM --> AMP["Class-D amp"]
 
-  CAM["OV2640 FPC"] --> S3
+  CAM["OV3660 FPC"] --> S3
   IMU["BMI160"] -- "I2C 400 kHz" --> S3
   S3 -- "I2S" --> DAC["PCM5102A"] --> AMP --> SPK["Speaker"]
   S3 -- "UART 921600<br/>13-byte frame @ 100 Hz" --> PICO
@@ -62,7 +62,7 @@ Everything that decides anything happens on the S3. The Pico decides nothing.
 | Concern | Owner | Notes |
 | --- | --- | --- |
 | WiFi / REST / telemetry to the Godot app | S3 | `game-app/scenes/bars_client.gd` already talks HTTP |
-| Camera capture + streaming | S3 | OV2640 on the on-board FPC, PSRAM framebuffers |
+| Camera capture + streaming | S3 | OV3660 on the on-board FPC, PSRAM framebuffers |
 | Audio playback | S3 | I²S out → PCM5102A |
 | IMU read | S3 | BMI160 on I²C, 200 Hz gyro / 100 Hz accel |
 | **Control law, mixing, ramping, braking** | **S3** | 100 Hz task, pinned to one core |
@@ -91,7 +91,7 @@ Pico does, and it costs two S3 pins (the UART link) to hand them over.
 | I²S `LRCK` / `WS` | **45** | right #14 | direct — the DAC board has its own series resistors |
 | I²S `BCK` | **47** | right #16 | direct. Signals permuted on 2026-10-11: header order now maps to pads `4` / `2` / `3`, so the ribbon crosses (§2.1) |
 | I²S `DIN` | **21** | right #17 | direct |
-| **LED strip data** | **48** | right #15 | RMT channel 1; 330–470 Ω series (`R6`), level shifter for a 5 V strip |
+| **LED strip data** | **48** | right #15 | RMT channel 1; 330–470 Ω series (`R6`), **and a level shifter** — a 5 V strip's `Vih` is `0.7 × VDD` = 3.5 V (§2.1) |
 | on-board WS2812 | (**48**) | right #15 | **shares the strip's net** — no buffer, so the on-board LED mirrors the strip's first pixel and is a usable status light again (§2.1) |
 | spare → **microSD** | 38, 39, 40 | right #9–#7 | the on-board slot: `CMD` / `CLK` / `DATA` — freed by the I²S move |
 | freed by the I²C move | **1, 2** | right #3, #4 | both are **`ADC1_CH0` / `ADC1_CH1`**, so they are analog-capable spares (§2.4) |
@@ -149,6 +149,18 @@ sees the reset pulse it needs to latch, so it sat dark and out of your control.
 > The strip sits **in parallel** with the on-board LED, not in series after it — the
 > LED's `DOUT` is not brought out to the header. Both therefore show the same first
 > pixel.
+
+**The strip's data line needs a level shifter.** The strip's `Vih` is **`0.7 × VDD`** — a
+*ratio*, not an absolute figure — so a 5 V-powered strip wants **3.5 V** and the S3's 3.3 V
+output falls short. Fit a shifter between `GPIO48` and the first pixel; a **74AHCT125** or
+**74HCT245** is the usual choice, because HCT inputs have TTL-level thresholds — they accept
+3.3 V in and drive a clean 5 V out at 800 kHz. (A BSS138 I²C-style shifter is marginal at
+that bit rate.) The 330 Ω series resistor (`R6`) stays, in front of the shifter's input.
+
+> Corrected twice on 2026-10-11, so record it plainly: this file originally called for a
+> shifter on the `0.7 × VDD` rule, the note was then removed after the threshold was
+> misread as `0.7 V` *absolute*, and it is now back. **`0.7 × VDD` is the correct reading**
+> — do not remove it a third time without a datasheet quote.
 
 **What the move already bought, and keeps:** `38` / `39` / `40` stay free as the on-board
 microSD slot (`CMD` / `CLK` / `DATA`), which the older map foreclosed by putting I²S
@@ -1024,9 +1036,9 @@ port down.
       fight the strap pull-down, but keep that wire short and add nothing else to it
       (§2.1). Expect the DAC ribbon to **cross**: the pins no longer run in the DAC's pad
       order.
-      330–470 Ω in series at the first pixel, ≥1000 µF across the strip's 5 V/GND, and
-      a level shifter (a 3.3 V data line is below the 0.7 × V<sub>DD</sub> = 3.5 V
-      threshold of a 5 V-powered WS2812).
+      330–470 Ω in series at the first pixel, ≥1000 µF across the strip's 5 V/GND, and a
+      level shifter between `GPIO48` and the strip — a 3.3 V data line is below the
+      `0.7 × V<sub>DD</sub> = 3.5 V` `Vih` of a 5 V-powered WS2812 (§2.1).
 - [ ] All four motor bodies' metal cases not touching the same ground by accident.
 - [ ] The camera FPC ribbon routed away from the motor wires.
 - [ ] Common ground check: battery −, S3 GND, Pico GND, ROB-14450 GND, DAC GND,
@@ -1180,7 +1192,7 @@ the rest of the plan is decoration.
 
 | Qty | Part | Notes |
 | --- | --- | --- |
-| 1 | ESP32-S3-WROOM **N16R8** board + OV2640/OV3660 | the Freenove 2 × 20 carrier |
+| 1 | ESP32-S3-WROOM **N16R8** board + OV3660 | the Freenove 2 × 20 carrier |
 | 1 | Raspberry Pi Pico (RP2040) | plain Pico preferred; a Pico W works but wastes its radio |
 | 2 | SparkFun **ROB-14450** (dual TB6612FNG, headers pre-soldered) | `JP1-7 VCC` → 3V3, `JP1-8 VM` → the **8.0 V motor rail** (never the battery), all three GND pins |
 | 1 | BMI160 breakout | **carries its own 3.3 V regulator and 3.9 kΩ I²C pull-ups** — feed `VIN` from `+5V`, fit no external pull-ups (§5) |
@@ -1199,7 +1211,7 @@ the rest of the plan is decoration.
 | — | 1000 µF low-ESR ×1 | **at the ESP32 board's 5 V pin**, not at the LM2596 — the brownout fix (§7.1) |
 | — | 470–1000 µF ×1 | amp 5 V rail |
 | — | ferrite beads / clip-ons ×4 | motor leads |
-| — | level shifter | only for a 5 V WS2812 strip |
+| — | level shifter (74AHCT125 / 74HCT245) | strip data, `GPIO48` → first pixel — HCT takes 3.3 V in and drives 5 V out |
 | — | 100 kΩ + 22 kΩ, 100 nF | battery divider → ADC (optional) |
 
 ---

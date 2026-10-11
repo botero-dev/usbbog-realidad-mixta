@@ -2,7 +2,7 @@
 
 Notes for moving the car firmware onto an **ESP32-S3-CAM board** (module:
 **ESP32-S3-WROOM-1 N16R8** — 16 MB quad flash, 8 MB **octal** PSRAM — with an
-OV2640/OV3660 on a DVP connector, a microSD slot, and native USB-C), adding a
+OV3660 on a DVP connector, a microSD slot, and native USB-C), adding a
 **PCM5102A I2S DAC** for sound, and a **BMI160/BMI270 6-axis IMU** for odometry
 (§13).
 
@@ -585,10 +585,14 @@ the bit timing is interrupt-sensitive, so update it from the main loop — not f
 ISR, and not inside the motor-ramp loop's tight window.
 
 **Wiring a 5 V strip** — ~330–470 Ω in series with the data line, ≥1000 µF across the
-strip's 5 V/GND, common ground with the board, and a level shifter if you want to stay
-in spec: 3.3 V into a 5 V-powered WS2812 is below the 0.7 × V<sub>DD</sub> (3.5 V)
-threshold. Budget ~60 mA per LED at full white, drawn from your 5 V rail rather than
-from the ESP32 pin.
+strip's 5 V/GND, common ground with the board, and a level shifter: the strip's `Vih` is
+**`0.7 × VDD`**, so at 5 V it needs **3.5 V** and a direct 3.3 V data line is below spec.
+A **74AHCT125** or **74HCT245** is the usual fix — TTL-threshold inputs take 3.3 V in and
+drive a clean 5 V out at 800 kHz. Budget ~60 mA per LED at full white, drawn from your 5 V
+rail rather than from the ESP32 pin.
+
+> The shifter requirement here was corrected twice on 2026-10-11 (briefly dropped after
+the threshold was misread as `0.7 V` absolute). `0.7 × VDD` is the final reading.
 
 ### Getting a pin for it
 
@@ -646,7 +650,7 @@ GY-BMI160 board does this with an on-board resistor, while the Adafruit/SparkFun
 breakouts use a solder jumper.
 
 > ⚠️ **Do not hang it on the camera's SCCB pins (`4`/`5`).** The addresses do not
-> collide (OV2640 = 0x30, BMI = 0x68), but `esp32-camera` owns those two pads with
+> collide (OV3660 = 0x3C, BMI = 0x68), but `esp32-camera` owns those two pads with
 > its own driver instance. That is a driver conflict, not a protocol one — use a
 > real I²C controller on its own pins.
 

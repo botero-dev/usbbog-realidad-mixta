@@ -105,10 +105,12 @@ Also not drawn, because they are not connections:
   `A3V3` (the regulator's *output*) is left open — **not** the same net as `VIN`, and
   never to be strapped to it (the DAC's supply maximum is 3.6 V). Six of that board's
   fifteen pads get a wire: `BCK`, `DIN`, `LCK`, `GND`, `VIN`, `LOUT`.
-* **The WS2812 level shifter.** If the strip runs on 5 V you need one between
-  `LED_STRIP_DIN` and the strip's first pixel — modelled as a direct wire here.
+* **The WS2812 level shifter** — **required** for a 5 V strip: its `Vih` is `0.7 × VDD`,
+  i.e. **3.5 V**, so the S3's 3.3 V data line is below spec. Fit one between
+  `LED_STRIP_DIN` and the strip's first pixel (74AHCT125 / 74HCT245 — HCT inputs are
+  TTL-threshold, so they take 3.3 V in and drive 5 V out); modelled as a direct wire here.
 * **The battery voltage divider** (optional, still an open item in the plan).
-* **The camera.** The OV2640 is on the board's own FPC connector — no wiring.
+* **The camera.** The OV3660 is on the board's own FPC connector — no wiring.
 
 ---
 
