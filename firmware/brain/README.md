@@ -1,19 +1,29 @@
 # `brain` — ESP32-S3 firmware
 
-The **S3 side** of the project. Today it does exactly one thing: puts a tone out of the
-I²S port so the audio chain can be heard working on its own.
+The **S3 side** of the project: the camera, the audio chain, and the Wi-Fi access point
+that serves both — in one firmware, as of 2026-10-11.
 
-> ✅ **Heard on hardware, 2026-10-11.** Three beeps out of the PCM5102A + class-D amp +
-speaker, first try once the build configuration was fixed — so `S3 → DAC → amp →
-speaker` is verified end to end, and `i2s_driver_install()` / `i2s_set_pin()` both succeed
-with the permuted pins (`47`/`21`/`45`).
+This is the **merge** of `firmware/cam-test` back into `brain`. Each was brought up and
+verified on its own, on purpose, so that a failure had exactly one candidate. Merged, they
+answer the question neither could ask alone: **do the camera and the audio chain
+coexist?** §6 predicts they might not, because the camera's DMA and the I²S DMA both reach
+into the octal PSRAM bus.
+
+> ✅ **Both halves verified separately, 2026-10-11.**
+> * **Audio:** three beeps out of the PCM5102A + class-D amp + speaker, first try once the
+>   build configuration was fixed — so `S3 → DAC → amp → speaker` is verified end to end,
+>   and `i2s_driver_install()` / `i2s_set_pin()` both succeed with the permuted pins
+>   (`47`/`21`/`45`).
+> * **Camera:** in `firmware/cam-test` — the sensor is detected as an **OV3660**
+>   (`PID 0x3660`, confirmed on hardware), the MJPEG stream runs, and the frame buffers sit
+>   in PSRAM. It is mounted rotated, so a vertical flip is applied at boot.
 >
-> What is **not** verified is §11's other half: *"and still clean while the camera
-> streams"*. There is no camera in this firmware yet, and that is where the PSRAM
-> bandwidth contention in §6 is expected to show up.
+> What is **still** not verified is §11's other half: *"and still clean while the camera
+> streams"*. That is exactly what this merge makes testable, and it is the next thing to
+> check by ear.
 >
-> Volume is now `VOLUME` in `src/main.cpp`, set to a tenth of the first revision because
-> that one was much too loud into a small speaker.
+> Volume is `VOLUME` in `src/audio_player.cpp` — a tenth of the first revision, which was
+> much too loud into a small speaker.
 
 Authority for every pin and every number here is `docs/circuit-plan.md` — §6 (audio
 chain), §10.1 (S3 firmware notes), §11 (bring-up order). It is intended to grow into the
@@ -22,16 +32,95 @@ in `firmware/car_control` (§10.3).
 
 ---
 
-## Why a tone, and not a sound file
+## Audio is silent until asked
 
-A tone is a chain you can verify. Playing a `.wav` exercises five things at once — the
-file system, the decoder, the I²S format, the DAC and the amp — and when it fails you
-learn nothing about which one. Bring-up step 2 in §11 is deliberately just *"test tone is
-clean, and still clean while the camera streams"*, with no motors, no camera and no link
-in the picture.
+Two sounds, both requested from the page or from `/play`, and **nothing plays by default**:
 
-Compare it to the Pico: `firmware/pico_body` is at the same stage. Both boards now have a
-firmware that proves its own wiring and nothing else.
+| Button | What it is | Entry point |
+| --- | --- | --- |
+| **beeps** | the 440 / 660 / 880 Hz test tones | `audio_request_beeps()` |
+| **sound file** | the embedded 4.14 s clip (`clip.pcm` → `audio_clip.h`) | `audio_request_clip()` |
+| **very low · low · medium · high · very high** | select the level for the sound buttons: 1 / 2 / 5 / 10 / 20 % of full scale | `/control?vol=N` |
+
+The level buttons **only select** — they play nothing, so a level can be chosen without
+making a noise. Press **beeps** to hear it. They exist because *"does it distort at this
+level?"* turned out to be the single most useful question while chasing a crackle: they
+make one press an A/B test instead of a reflash. `vol` is in **per-mille** (`vol=50` → 5 % →
+about -26 dBFS), because percent cannot express the quiet end and floats in a query string
+are extra code for nothing.
+
+The page also keeps its own copy of the five levels, so it can *name* the level it is
+actually at — including one set by `curl` that matches no button, which is then shown as a
+bare percentage rather than mislabelled.
+
+The level is **deferred, not applied immediately**: changing it rebuilds the 1024-entry
+sine table, and doing that while the audio task is reading it would be an audible click.
+So the HTTP side records the level and the audio task applies it just before the next
+sound. `/status` reports it as `volume_milli`, and `/control?vol=N` sets it without
+playing anything.
+
+Two reasons for no autoplay. A board that makes noise the moment it powers up is a board
+you cannot debug — *"is the amp hissing?"* is unanswerable while the firmware is also
+beeping. And on a car, sound should be a decision rather than a side effect of booting.
+
+**Playback runs in its own task, never in the HTTP handler.** `i2s_write()` blocks for the
+length of the sound, and that handler's task is the one serving `/stream`, so playing
+inline would freeze the video every time a button was pressed — a confusing thing to debug.
+A new request supersedes one already playing, at the next ~6 ms buffer boundary.
+
+The reason the first bring-up was a *tone* still holds, and it is why the button is
+labelled "beeps": a tone is a chain you can verify, whereas playing a file exercises the
+filesystem, the decoder, the I²S format, the DAC and the amp at once, and a failure tells
+you nothing about which one.
+
+---
+
+## The web page and its endpoints
+
+| Endpoint | What it does |
+| --- | --- |
+| `GET /` | The page: the live stream, the sound buttons and the beep-level buttons. |
+| `GET /stream` | The video — `multipart/x-mixed-replace`, one JPEG per part. **On port 81** — see below. |
+| `GET /capture` | One JPEG snapshot. |
+| `GET /status` | JSON: heap, PSRAM, stream clients, fps, `audio`, sensor settings, LED. |
+| `GET\|POST /play` | `?src=beeps` or `?src=clip`, plus an optional `&vol=0..1000` (per-mille) to set the level with it. Returns immediately; playback happens in the audio task. |
+| `GET\|POST /control` | Sensor and LED settings: `framesize`, `quality`, `brightness`, `contrast`, `saturation`, `hmirror`, `vflip`, `led_r/g/b`, `led_auto`. |
+
+**Two ports, and it is not cosmetic.** `esp_http_server` runs *all* of a server's handlers
+in **one** FreeRTOS task — `httpd_config_t` has a single `task_priority` — and our
+`/stream` handler never returns while a client is watching, because that is what MJPEG is.
+So if the stream shared port 80, **every other endpoint would go dead the moment anyone
+opened the video**, and queued button presses would sit unanswered until the stream was
+torn down (which is why "press the button, nothing happens, then reset the board and they
+all fire at once" is the exact symptom). Priority cannot help: the task is not spinning,
+it is parked inside the stream loop, so there is nothing to preempt. The stream therefore
+gets its own server on **port 81**, where blocking forever is harmless. The page builds
+the URL from `location.hostname`, so it follows whatever address the board is reached on.
+
+> ⚠️ **If you ever add a third server, set its `ctrl_port` too.** `httpd_config_t` has a
+> second, less obvious port used internally, and `HTTPD_DEFAULT_CONFIG()` hands *every*
+> instance the same value. Two instances therefore collide and the second one fails at boot
+> with `error in creating ctrl socket (112)` — where 112 is `EADDRINUSE` and the message
+> points at neither the port you set nor the socket you think you asked for. The fix is one
+> line: `config.ctrl_port = 32768 + port;`.
+
+The buttons use `fetch()`, not links, and that is not decoration: a plain
+`<a href="/play?...">` would **navigate away** from the page and kill the stream's socket,
+so pressing "beeps" would look like it had stopped the video.
+
+**The LED on `GPIO48`** doubles as status (§2.1): dim blue = idle, green = someone is
+streaming, white = audio playing, and any explicit colour is a torch that turns status mode
+off until `?led_auto=1`. It is driven with `neopixelWrite()` — RMT, never PWM, which on a
+WS2812 data line is not "dim" but corrupted bit timing.
+
+---
+
+## Why the camera lives here now
+
+`firmware/cam-test/` is kept, and it is still the better place to change anything about the
+camera on its own. This merge exists for the interaction, not for tidiness: with both in one
+binary, "does the audio stay clean while the camera streams?" is a question you can answer
+by ear instead of by argument.
 
 ---
 
@@ -51,8 +140,8 @@ and blog post shows **does not exist in this core**. It arrived in core 3.x, alo
 completely different set of types. The two are not interchangeable and the compiler's
 complaint is not clear about which world you are in.
 
-If the platform is ever upgraded to a core 3.x release, `src/main.cpp` is the file that
-has to be rewritten. Nothing else in the repository touches I²S yet.
+If the platform is ever upgraded to a core 3.x release, `src/audio_player.cpp` is the file
+that has to be rewritten. Nothing else in the repository touches I²S.
 
 ---
 
@@ -75,16 +164,14 @@ there is **no MCLK wire** (`SCK`→GND makes the DAC derive its clock from `BCK`
 configuration to do.
 
 **Hardware confirmed 2026-10-11:** a PCM5102A plus a class-D amp — the `U6`/`U7` pair
-exactly as the schematic draws it, so no schematic change was needed. The camera is
-deliberately excluded from this stage (audio on its own first) and lives in its own
-project, `firmware/cam-test/`.
+exactly as the schematic draws it, so no schematic change was needed.
 
-> **Corrected 2026-10-11 — this paragraph used to say "so PSRAM stays off", and that was
-> wrong.** PSRAM is *not* controlled by a flag in `platformio.ini`: the Freenove board def
-> sets `-DBOARD_HAS_PSRAM` (with `memory_type = qio_opi`) in its own `extra_flags`, so the
-> core initialises it at boot regardless. The unchanged decision is narrower than the old
-> wording implied — **PSRAM is not used for frame buffers in this project**, because there
-> is no camera here. See `docs/esp32-cam.md` §10 item 2 and `firmware/cam-test/`.
+> **PSRAM, corrected — and now genuinely in use.** `platformio.ini` does not set
+> `-DBOARD_HAS_PSRAM` and never needed to: the Freenove board def puts it in its own
+> `extra_flags`, alongside `memory_type = qio_opi`. So PSRAM was live all along, and an
+> earlier note here claiming the flag was "absent" was simply wrong. It is now **in use**:
+> the camera allocates its frame buffers there via `config.fb_location`. §10 item 2's
+> "PSRAM not required" applied to the audio-only stage, which is over.
 
 ---
 
@@ -93,13 +180,15 @@ project, `firmware/cam-test/`.
 ```bash
 pio run -d firmware/brain                 # build
 pio run -d firmware/brain -t upload       # flash
-pio run -d firmware/brain -t monitor      # USB CDC output
+pio run -d firmware/brain -t monitor      # serial console (UART0)
 ```
 
-Expect three beeps (440 / 660 / 880 Hz), a 2 s gap, repeat.
+The board boots **silent** — no autoplay. Join the AP (`brain` / `brainpass`, or whatever
+`secrets.h` says) and open `http://192.168.4.1/`, then press a button. The status LED is
+dim blue while idle.
 
-The build is clean under this framework's warning flags. As built: **RAM 20 752 B / flash
-280 713 B**.
+Clean build, zero warnings. As built: **RAM 50 080 B / flash 1 179 153 B** — 35.3 % of the
+3.3 MB app partition.
 
 ---
 
@@ -133,13 +222,16 @@ In order, because this is the order they actually happen:
 
 ## Next, in the order that keeps failures separable
 
-1. Get the three beeps audible on the bench. Nothing else counts until this happens.
-2. Replace the tone generator with streamed audio, keeping the same I²S write path — the
+1. ✅ The beeps are audible — done, and now on demand rather than at boot.
+2. ✅ The camera stream works — built and verified in `cam-test`, merged here.
+3. **Listen while streaming.** Press "sound file" with the video open. If it crackles,
+   lower the `framesize` **first** (`?framesize=qvga`) — §6's PSRAM bandwidth contention,
+   not an audio bug. I²S buffers stay in internal RAM (the default); that is mitigation 1
+   and it is already in place.
+4. **The BMI160** — bring-up step 3 of §11. I²C on `41`/`42`, address **`0x69`** (`SA0` is
+   pulled up), `WHO_AM_I` must read `0x24`.
+5. **Then the core split** from §10.1: the control task pinned to core 1 at priority 5 with
+   `vTaskDelayUntil()`. `loop()` is deliberately empty so that core stays free for it; the
+   audio task already owns core 0 alongside the camera and the radio.
+6. Replace the tone generator with streamed audio, keeping the same I²S write path — the
    section only changes *who fills the buffer*.
-3. Then the core split from §10.1: audio on core 0, the control task pinned to core 1 at
-   priority 5 with `vTaskDelayUntil()`. Do not let this loop share a core with the control
-   task once the control task exists.
-4. **Keep I²S buffers in internal RAM** (the default) — the camera's DMA and the I²S DMA
-   both reach for PSRAM, and §6's bandwidth note expects occasional underruns if that is
-   ignored. If audio crackles only while the camera is streaming, lower the `framesize`
-   before touching the audio driver.

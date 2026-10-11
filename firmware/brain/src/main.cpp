@@ -1,234 +1,392 @@
-// brain — ESP32-S3. Stage 1: play a clip out of the audio chain.
+// main.cpp — brain: the ESP32-S3 side of the car, camera + audio + AP in one firmware.
 // ---------------------------------------------------------------------------
-// This is the first S3 firmware in the repository: the project that is meant to
-// become the "brain" of docs/circuit-plan.md section 1 (WiFi, camera, IMU, the
-// control loop, audio) and to absorb the mixing code in firmware/car_control
-// (plan section 10.3).
+// This is `firmware/cam-test` and `firmware/brain` MERGED (2026-10-11). The two
+// were kept apart on purpose while each was being brought up, so that a failure
+// had one candidate. Now that both work on their own, they share a binary for a
+// reason that neither could test alone:
 //
-// What it does today is deliberately small, and it is bring-up step 2 of
-// section 11: emit a tone from the I2S port so the chain
+//   DO THE CAMERA AND THE AUDIO CHAIN COEXIST?
 //
-//     S3 --I2S--> PCM5102A --line level--> class-D amp --> speaker
+// Plan section 6 predicts they might not: the camera's DMA reaches into PSRAM and
+// so does the I2S DMA, both on the octal PSRAM bus. Merged, that prediction stops
+// being a note in a document and becomes something you can hear. The mitigations,
+// in the order section 6 gives them:
+//   1. keep I2S buffers in INTERNAL RAM -- the default, and what audio_player.cpp
+//      relies on;
+//   2. drop the camera's `framesize` BEFORE touching anything in the audio driver.
+// So if the sound crackles only while the camera streams, try
+//   curl 'http://192.168.4.1/control?framesize=qvga'
+// before you go looking for a bug in the audio path.
 //
-// can be heard working on its own, with no motors, no camera and no link in the
-// picture. A tone is a chain you can verify; "play a sound file" is five things
-// at once that you cannot pin down when it fails.
+// What it is NOT yet: no BMI160, no control loop, no link to the Pico, no motors.
+// Bring-up step 3 of section 11 is the IMU, and the core split for the control
+// task comes with it.
 //
-// ---------------------------------------------------------------------------
-// THE API GENERATION TRAP -- READ THIS BEFORE COPYING ANY EXAMPLE OFF THE WEB.
+// AUDIO IS SILENT UNTIL ASKED. There is no autoplay: the two buttons on the page
+// are the only way to make a sound (see audio_player.h for why).
 //
-// This project builds against Arduino core **2.0.17** (see platformio.ini:
-// espressif32 7.1.3). That core has the LEGACY I2S driver: driver/i2s.h,
-// i2s_config_t, i2s_driver_install(), i2s_write(). The `ESP_I2S` class with
-// `i2s.begin()` / `i2s.write()` that almost every current tutorial shows does
-// NOT exist here -- it arrived in core 3.x. The two are not interchangeable and
-// the compiler's complaint is opaque. If you upgrade the platform later, this
-// file is what has to change.
+// Wiring: NONE for the camera (it is on the board's own FPC connector). Six wires
+// to the DAC, listed in README.md and plan section 6.
 // ---------------------------------------------------------------------------
 
 #include <Arduino.h>
-#include <driver/i2s.h>
-#include <math.h>
-#include <string.h>
+#include <WiFi.h>
 
-#include "audio_clip.h"
+#include "app_httpd.h"
+#include "audio_player.h"
+#include "camera_pins.h"
+#include "esp_camera.h"
 
-// --- Pins -------------------------------------------------------------------
-// Authority: docs/circuit-plan.md section 6, and hardware/wiring.md. Note the
-// signal NAME is from the DAC's point of view: `DIN` is the DAC's *input*, so it
-// is the S3's data OUT.
+// Credentials: `secrets.h` if it exists, otherwise the throwaway defaults in
+// secrets.example.h. Copy the example to set a real SSID/password; this project
+// never needs one to run.
+#if __has_include("secrets.h")
+#include "secrets.h"
+#else
+#include "secrets.example.h"
+#endif
+
+// --- DIAGNOSTIC BUILD FLAGS ------------------------------------------------
+// All default to 0, so the normal build is untouched. They exist to bisect the
+// distorted audio ONE VARIABLE AT A TIME, without editing code:
 //
-// Signals PERMUTED on 2026-10-11 at the user's request: LRCK / BCK / DIN across the
-// same three pins (45 / 47 / 21). The pin set is unchanged, so in header order the
-// pins now map to DAC pads 4 / 2 / 3 -- which means the ribbon has to CROSS. It only
-// runs straight when the middle pin (47) carries DIN, i.e. the middle pad (plan 2.1).
-// 48 is the LED strip and the on-board WS2812. 45 is the VDD_SPI strapping pin and
-// carries a clock either way, which is safe because the DAC's input is high-Z and the
-// strap is sampled only at reset.
-static const gpio_num_t PIN_I2S_BCK  = GPIO_NUM_47;  // → DAC pad 2, `BCK`
-static const gpio_num_t PIN_I2S_DOUT = GPIO_NUM_21;  // → DAC pad 3, `DIN`
-static const gpio_num_t PIN_I2S_LRCK = GPIO_NUM_45;  // → DAC pad 4, `LCK`
-
-// --- I2S format -------------------------------------------------------------
-static const i2s_port_t I2S_PORT    = I2S_NUM_0;
-static const uint32_t   SAMPLE_RATE = 44100;
-static const size_t     BUF_FRAMES  = 256;  // stereo frames per write = 1 KB
-
-// 1024-entry sine table, built once at startup.
+//   -DBRAIN_BOOT_BEEP=1   play the beeps ~2 s after boot, with no page needed.
+//                         Deliberately NOT a feature -- see audio_player.h on why
+//                         nothing autoplays. It exists so the tone can be judged
+//                         with no radio in the picture, i.e. with no way to reach
+//                         /play.
+//   -DBRAIN_NO_CAMERA=1   skip camera init (no PSRAM frame buffers, no camera DMA)
+//   -DBRAIN_NO_RADIO=1    skip SoftAP and the web server (radio never transmits)
 //
-// A table rather than sinf() per sample: at 44.1 kHz a call per sample would
-// still fit (the S3 has an FPU, unlike the classic ESP32), but the audio loop is
-// the one place where "it probably keeps up" is not good enough, and indexing a
-// table is trivially correct.
-static const size_t TABLE_LEN = 1024;
-static int16_t sine_table[TABLE_LEN];
+// The `diag` env in platformio.ini turns all three on at once. To bisect, drop
+// them one at a time -- see the comment there for the order.
+#ifndef BRAIN_BOOT_BEEP
+#define BRAIN_BOOT_BEEP 0
+#endif
+#ifndef BRAIN_NO_CAMERA
+#define BRAIN_NO_CAMERA 0
+#endif
+#ifndef BRAIN_NO_RADIO
+#define BRAIN_NO_RADIO 0
+#endif
 
-// Amplitude, as a fraction of full scale (1.0 = 32767).
-//
-// This IS the volume control, and it is the only one there is: the PCM5102A is a
-// fixed line-level output and the class-D amp has a fixed gain, so making the
-// samples smaller is the entire mechanism in software.
-//
-// 12000 counts (0.366) was the first revision and was far too loud into a small
-// speaker. This is a tenth of that.
-//
-// What it costs: every halving of amplitude throws away one bit of resolution, so
-// 0.0366 uses roughly 11 of the 16 bits. Inaudible on a beep. For music you would
-// attenuate in the ANALOGUE domain -- a pot, or the amp's gain pins -- and keep the
-// digital signal at full scale, which is the general rule for any audio design.
-static const float VOLUME = 0.0366f;   // ≈ 1200 counts, about -29 dBFS
+namespace {
 
-static const float FULL_SCALE = 32767.0f;
+// --- camera: the numbers, and why ----------------------------------------
+// QVGA/VGA first, UXGA later. Bring-up rule from the Pico side of this repo:
+// change one thing at a time. If the first stream is set to UXGA and it stutters,
+// you cannot tell a config problem from a bandwidth problem. VGA at quality 12
+// is about 20-40 KB per frame and is obviously fine; climb once it is stable.
+constexpr framesize_t kFrameSize = FRAMESIZE_VGA;
+constexpr int kQuality = 12;  // 0..63, LOWER is better and larger
 
-static void build_sine_table() {
-  const float pi = 3.14159265358979f;
-  for (size_t i = 0; i < TABLE_LEN; ++i) {
-    const float radians = 2.0f * pi * (float)i / (float)TABLE_LEN;
-    sine_table[i] = (int16_t)(sinf(radians) * FULL_SCALE * VOLUME);
+// 20 MHz is the usual XCLK for this sensor. The header notes that on the S3,
+// 16 MHz can enable EDMA mode; leave that alone until there is a reason.
+constexpr int kXclkHz = 20000000;
+
+// --- orientation: a MOUNTING fact, not a preference -----------------------
+// This carrier's OV3660 sits ROTATED relative to the DVP connector's idea of
+// "up", so an unflipped stream is upside down. That is a property of THIS board
+// with THIS sensor, which is why it lives here as a boot default rather than as
+// a /control call someone has to remember after every reset.
+//
+// Finding the right pair without a reflash — try in this order:
+//     curl 'http://192.168.4.1/control?vflip=1'                  (upside down)
+//     curl 'http://192.168.4.1/control?hmirror=1&vflip=1'        (rotated 180°)
+//     curl 'http://192.168.4.1/control?hmirror=1'                (mirrored)
+//
+// The flip is applied IN THE SENSOR, not by a CSS transform on the page, and
+// that distinction matters: it also fixes /capture, and it fixes whatever the
+// frame looks like to code. A flip in the page would leave the actual pixel data
+// mirrored, which is exactly the kind of lie that breaks vision or odometry later.
+constexpr int kSensorVFlip = 1;   // was upside down on this board: confirmed 2026-10-11
+constexpr int kSensorHMirror = 0;
+
+esp_err_t camera_init() {
+  const bool has_psram = ESP.getPsramSize() > 0;
+
+  camera_config_t config = {};
+  config.ledc_channel = LEDC_CHANNEL_0;
+  config.ledc_timer = LEDC_TIMER_0;
+
+  config.pin_pwdn = CAM_PIN_PWDN;
+  config.pin_reset = CAM_PIN_RESET;
+  config.pin_xclk = CAM_PIN_XCLK;
+  // NOTE the field names: this bundled esp32-camera uses the modern
+  // `pin_sccb_sda` / `pin_sccb_scl`. The older `pin_sscb_*` spelling still
+  // exists in the header but is marked deprecated and emits a warning.
+  config.pin_sccb_sda = CAM_PIN_SIOD;
+  config.pin_sccb_scl = CAM_PIN_SIOC;
+  config.pin_d7 = CAM_PIN_D7;
+  config.pin_d6 = CAM_PIN_D6;
+  config.pin_d5 = CAM_PIN_D5;
+  config.pin_d4 = CAM_PIN_D4;
+  config.pin_d3 = CAM_PIN_D3;
+  config.pin_d2 = CAM_PIN_D2;
+  config.pin_d1 = CAM_PIN_D1;
+  config.pin_d0 = CAM_PIN_D0;
+  config.pin_vsync = CAM_PIN_VSYNC;
+  config.pin_href = CAM_PIN_HREF;
+  config.pin_pclk = CAM_PIN_PCLK;
+
+  config.xclk_freq_hz = kXclkHz;
+  config.pixel_format = PIXFORMAT_JPEG;
+
+  // JPEG, not RGB565, because the MJPEG stream wants JPEG and doing the
+  // conversion in the sensor pipeline is free. RGB565 would mean encoding a
+  // JPEG per frame in software, which is the expensive mistake here.
+  config.frame_size = kFrameSize;
+  config.jpeg_quality = kQuality;
+
+  // Two buffers when PSRAM is there: one fills while the other is being sent,
+  // so the stream does not stall behind the network. Without PSRAM, one buffer
+  // in internal RAM — the frame size has to come down with it.
+  config.fb_count = has_psram ? 2 : 1;
+  config.fb_location = has_psram ? CAMERA_FB_IN_PSRAM : CAMERA_FB_IN_DRAM;
+  // When EMPTY rather than LATEST: with two buffers this never waits for a
+  // frame that is being written, and for a stream a slightly older frame is
+  // indistinguishable from a newer one.
+  config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
+
+  return esp_camera_init(&config);
+}
+
+void print_camera_report() {
+  sensor_t *s = esp_camera_sensor_get();
+  if (!s) {
+    Serial.println("[cam] no sensor handle -- esp_camera_init() must have failed");
+    return;
+  }
+  // The PID is the useful line here. It is how you find out that the board
+  // shipped an OV3660 and not the OV2640 that half the internet assumes.
+  Serial.printf("[cam] PID 0x%04x  (OV3660 = 0x3660, OV2640 = 0x2640)\n", s->id.PID);
+  Serial.printf("[cam] sensor version 0x%04x, MID 0x%02x%02x\n", s->id.VER,
+                s->id.MIDH, s->id.MIDL);
+  Serial.printf("[cam] framesize enum %d, quality %d\n", (int)s->status.framesize,
+                (int)s->status.quality);
+  Serial.printf("[cam] xclk %d Hz, pixel format JPEG\n", kXclkHz);
+}
+
+// Apply the mounting orientation. Safe to call only after a successful
+// esp_camera_init(); set_vflip/set_hmirror write sensor registers directly and
+// take effect immediately, including on a stream that is already running.
+void apply_default_orientation() {
+  sensor_t *s = esp_camera_sensor_get();
+  if (!s) return;
+  s->set_hmirror(s, kSensorHMirror);
+  s->set_vflip(s, kSensorVFlip);
+  Serial.printf("[cam] orientation: hmirror %d, vflip %d (mounted rotated)\n",
+                kSensorHMirror, kSensorVFlip);
+}
+
+// --- access point: same conventions as the network-test project -----------
+constexpr int kApChannel = 1;
+constexpr int kApMaxClients = 4;
+
+void start_access_point() {
+  WiFi.persistent(false);  // do not write Wi-Fi config to NVS on every boot
+  WiFi.mode(WIFI_AP);      // AP only: no STA, so no reconnect loop and no radio
+                           // time spent scanning for a router that is not there
+  // Power save off. This serves a video stream: latency matters more than the few
+  // mA that modem sleep would save, and sleep is a classic cause of "the stream
+  // freezes every few seconds".
+  WiFi.setSleep(false);
+
+  IPAddress ip(192, 168, 4, 1);
+  IPAddress mask(255, 255, 255, 0);
+  WiFi.softAPConfig(ip, ip, mask);
+
+  const bool ok = WiFi.softAP(AP_SSID, AP_PASSWORD, kApChannel, /*hidden=*/false,
+                              kApMaxClients);
+
+  Serial.printf("[wifi] SoftAP \"%s\": %s   auth %s, channel %d\n", AP_SSID,
+                ok ? "up" : "FAILED",
+                (AP_PASSWORD[0] != '\0') ? "WPA2" : "OPEN", kApChannel);
+  // Read the AP MAC here, not in the banner: macAddress() returns a valid value
+  // only once the radio is up, and printing six zero bytes is worse than useless
+  // when you are trying to find the thing on a network list.
+  Serial.printf("[wifi] ap mac %s\n", WiFi.softAPmacAddress().c_str());
+  // The password itself is deliberately not printed. If it is worth knowing, it
+  // is in secrets.h -- a serial log is the wrong place for it.
+  Serial.printf("[wifi] open http://%s/   (gateway %s, mask %s)\n",
+                WiFi.softAPIP().toString().c_str(), ip.toString().c_str(),
+                mask.toString().c_str());
+  Serial.println("[wifi] devices will warn \"no internet\" -- that is expected:");
+  Serial.println("       this AP has no uplink, it exists to serve one page.");
+}
+
+// Why did the LAST boot happen? This matters more than it looks. During physical
+// debugging -- wiggling cables -- a brownout is exactly what you are hunting, and
+// the ESP32 will reset and come back up looking perfectly healthy. Naming the
+// reason turns "it glitched" into evidence, and it costs one line.
+const char *reset_reason_name(esp_reset_reason_t r) {
+  switch (r) {
+    case ESP_RST_POWERON:   return "POWERON (cold start / EN pin)";
+    case ESP_RST_BROWNOUT:  return "BROWNOUT  <-- the 5 V rail sagged";
+    case ESP_RST_SW:        return "software reset";
+    case ESP_RST_PANIC:     return "PANIC (crash)";
+    case ESP_RST_INT_WDT:   return "interrupt watchdog";
+    case ESP_RST_TASK_WDT:  return "task watchdog";
+    case ESP_RST_WDT:       return "other watchdog";
+    case ESP_RST_DEEPSLEEP: return "deep-sleep wake";
+    case ESP_RST_EXT:       return "external pin";
+    default:                return "unknown";
   }
 }
 
-static void i2s_init() {
-  // Field order matches the declaration of i2s_driver_config_t in
-  // hal/i2s_types.h; anything omitted is zero-initialised.
-  const i2s_config_t config = {
-      .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
-      .sample_rate = SAMPLE_RATE,
-      .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
-      // Stereo, even though the build is mono: the DAC decodes both slots and we
-      // only take LOUT. Feeding both slots the same sample keeps the frame
-      // layout a boring, standard I2S one.
-      .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
-      // I2S_COMM_FORMAT_I2S | I2S_COMM_FORMAT_I2S_MSB is the old spelling and is
-      // marked deprecated in this SDK (it compiles with a warning). Use this one.
-      .communication_format = I2S_COMM_FORMAT_STAND_I2S,
-      .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-      .dma_buf_count = 8,
-      .dma_buf_len = BUF_FRAMES,
-      .use_apll = false,
-      // If the DSP ever underruns, send silence rather than replaying whatever
-      // stale samples are still in the DMA descriptors. Turns a glitch into a
-      // gap, which is a much easier thing to recognise by ear.
-      .tx_desc_auto_clear = true,
-      .fixed_mclk = 0,
-  };
-
-  // No MCLK. The PCM5102A board's `SCK` pad is bridged to GND, so the DAC derives
-  // its system clock from BCK -- documented in plan section 6, and it means the
-  // chain is genuinely three wires.
-  const i2s_pin_config_t pins = {
-      .mck_io_num = I2S_PIN_NO_CHANGE,
-      .bck_io_num = PIN_I2S_BCK,
-      .ws_io_num = PIN_I2S_LRCK,
-      .data_out_num = PIN_I2S_DOUT,
-      .data_in_num = I2S_PIN_NO_CHANGE,
-  };
-
-  ESP_ERROR_CHECK(i2s_driver_install(I2S_PORT, &config, 0, NULL));
-  ESP_ERROR_CHECK(i2s_set_pin(I2S_PORT, &pins));
-  // Start from a known-empty DMA chain, otherwise the first thing you hear can be
-  // whatever was in those buffers.
-  ESP_ERROR_CHECK(i2s_zero_dma_buffer(I2S_PORT));
+void print_banner() {
+  Serial.println();
+  Serial.println("brain  --  ESP32-S3 camera + audio + AP (cam-test merged in)");
+  Serial.println("=================================================================");
+  Serial.printf("chip      : %s rev %u, %u core(s) @ %u MHz\n", ESP.getChipModel(),
+                (unsigned)ESP.getChipRevision(), (unsigned)ESP.getChipCores(),
+                (unsigned)getCpuFrequencyMhz());
+  Serial.printf("reset     : %s\n", reset_reason_name(esp_reset_reason()));
+  Serial.printf("flash     : %u MB\n",
+                (unsigned)(ESP.getFlashChipSize() / (1024 * 1024)));
+  Serial.printf("psram     : %u KB free of %u KB\n",
+                (unsigned)(ESP.getFreePsram() / 1024),
+                (unsigned)(ESP.getPsramSize() / 1024));
+  Serial.printf("free heap : %u B\n", (unsigned)ESP.getFreeHeap());
+  Serial.println();
+  Serial.println("camera is on the board's own FPC connector -- nothing to wire.");
+  Serial.printf("LED/torch : GPIO%d (the on-board WS2812, shared with the strip)\n",
+                (int)PIN_LED_STRIP);
+  Serial.printf("audio     : I2S %u Hz, SILENT until asked (sound + level buttons)\n",
+                (unsigned)audio_sample_rate());
+  Serial.println();
 }
 
-// Play `freq_hz` for `ms`. A frequency of 0 means silence, which is worth having:
-// a gap is how you tell "the code stopped writing samples" from "the DAC is
-// hissing".
-static void play(uint16_t freq_hz, uint32_t ms) {
-  // Phase accumulator: the top 10 bits of a 32-bit counter index the table, so
-  // the step size for a frequency is (freq / sample_rate) * 2^32.
-  uint32_t phase = 0;
-  const uint32_t step =
-      (uint32_t)(((uint64_t)freq_hz << 32) / (uint64_t)SAMPLE_RATE);
-
-  int16_t buf[BUF_FRAMES * 2];  // interleaved L, R
-  const uint32_t start = millis();
-
-  while ((int32_t)(millis() - start) < (int32_t)ms) {  // wrap-safe comparison
-    for (size_t i = 0; i < BUF_FRAMES; ++i) {
-      const int16_t sample =
-          (freq_hz == 0) ? 0 : sine_table[phase >> 22];
-      phase += step;
-      buf[2 * i] = sample;      // left  → DAC LOUT (the pad that is wired)
-      buf[2 * i + 1] = sample;  // right → DAC ROUT (unused)
-    }
-    size_t written = 0;
-    // portMAX_DELAY: this is the only writer, so blocking until the DMA chain has
-    // room is exactly the right behaviour and keeps the phase continuous.
-    i2s_write(I2S_PORT, buf, sizeof(buf), &written, portMAX_DELAY);
-  }
-}
-
-// Play the embedded clip once.
-//
-// The clip is MONO 16-bit at the same 44.1 kHz the I2S port is already configured
-// for, so the only per-frame work is duplicating the sample into both slots -- the
-// frame layout stays the standard one the DAC has locked onto, and nothing is
-// resampled at runtime. `tools/pcm_to_c.py` explains how to make that true again if
-// the audio is ever replaced; a rate or channel mismatch is SILENT, it just plays at
-// the wrong pitch.
-//
-// The samples are full-scale-ish (they came from a 24-bit recording), so the same
-// VOLUME that tamed the test tone is applied here -- otherwise this is far louder
-// than the beeps ever were.
-static void play_clip() {
-  int16_t buf[BUF_FRAMES * 2];  // interleaved L, R
-  size_t pos = 0;
-
-  while (pos < CLIP_SAMPLES) {
-    const size_t room = CLIP_SAMPLES - pos;
-    const size_t n = (room < BUF_FRAMES) ? room : BUF_FRAMES;
-
-    for (size_t f = 0; f < n; ++f) {
-      const int16_t s = (int16_t)(clip_pcm[pos + f] * VOLUME);
-      buf[2 * f] = s;      // left  -> DAC LOUT (the pad that is wired)
-      buf[2 * f + 1] = s;  // right -> DAC ROUT (unused in this mono build)
-    }
-
-    size_t written = 0;
-    i2s_write(I2S_PORT, buf, n * 2 * sizeof(int16_t), &written, portMAX_DELAY);
-    pos += n;
-  }
-}
+}  // namespace
 
 void setup() {
   Serial.begin(115200);
-  // USB CDC drops output until a host is listening. Wait briefly, but never block
-  // forever: a board that refuses to make a sound because no terminal is open
-  // would be a stupid failure mode.
-  const uint32_t wait_until = millis() + 2000;
-  while (!Serial && (int32_t)(millis() - wait_until) < 0) {
+  // Bounded wait: a board that will not boot because no terminal is open would
+  // be a silly failure, but the banner is much easier to read when it is not
+  // racing the host.
+  const uint32_t deadline = millis() + 2000;
+  while (!Serial && (int32_t)(millis() - deadline) < 0) {
     delay(10);
   }
 
-  Serial.println();
-  Serial.println("brain  --  I2S clip player (bring-up step 2)");
-  Serial.println("============================================");
-  Serial.printf("sample rate : %lu Hz, 16-bit stereo\n", (unsigned long)SAMPLE_RATE);
-  Serial.printf("BCK         : GPIO%d  -> DAC pad 2 (BCK)\n", (int)PIN_I2S_BCK);
-  Serial.printf("DIN (data)  : GPIO%d  -> DAC pad 3 (DIN)\n", (int)PIN_I2S_DOUT);
-  Serial.printf("LRCK        : GPIO%d  -> DAC pad 4 (LCK)\n", (int)PIN_I2S_LRCK);
-  Serial.printf("expected BCK: %lu Hz\n", (unsigned long)(SAMPLE_RATE * 32));
-  const unsigned clip_s = (unsigned)(CLIP_SAMPLES / SAMPLE_RATE);
-  const unsigned clip_ms =
-      (unsigned)(((uint64_t)(CLIP_SAMPLES % SAMPLE_RATE) * 1000ULL) / SAMPLE_RATE);
-  Serial.printf("clip        : %u samples, %u.%03u s, mono duplicated to both slots\n",
-                (unsigned)CLIP_SAMPLES, clip_s, clip_ms);
-  Serial.println();
+  print_banner();
 
-  build_sine_table();
-  i2s_init();
+  // Camera BEFORE the radio and before I2S, on purpose. esp_camera_init() is the
+  // step most likely to fail (a bad pin map, or a sensor that does not answer on
+  // SCCB), and it is much easier to diagnose when it is the only thing that has
+  // happened. See /memories/repo/esp32-s3-boot-failure.md for how expensive it is
+  // to have two suspects at once.
+#if BRAIN_NO_CAMERA
+  Serial.println("[diag] BRAIN_NO_CAMERA=1: camera init skipped entirely.");
+#else
+  Serial.println("[cam] initialising...");
+  const esp_err_t cam = camera_init();
+  if (cam != ESP_OK) {
+    Serial.printf("[cam] FAILED: %s (0x%04x)\n", esp_err_to_name(cam), (unsigned)cam);
+    Serial.println("[cam] \"ESP_ERR_NOT_FOUND\" / 0x20001 = the sensor did not");
+    Serial.println("      answer on SCCB. Check, in this order:");
+    Serial.println("        1. the FPC ribbon is seated and the right way round;");
+    Serial.println("        2. none of GPIO 4-18 is claimed by other firmware;");
+    Serial.println("        3. the board actually has a sensor fitted.");
+    Serial.println("[cam] NOT starting the radio: a half-up firmware that serves");
+    Serial.println("      a 404 is harder to diagnose than one that says nothing.");
+    return;
+  }
+  print_camera_report();
+  apply_default_orientation();
+#endif  // BRAIN_NO_CAMERA
 
-  Serial.println("I2S up. The embedded clip plays on repeat, with a 1.5 s gap.");
-  Serial.println("Nothing audible? Check, in this order:");
-  Serial.println("  1. the `XSMT` bridge on the DAC -- floated = muted, and it looks");
-  Serial.println("     exactly like a firmware bug. Meter it.");
-  Serial.println("  2. DAC `VIN` on 5 V and `GND` on ground (pads 6 and 5).");
-  Serial.println("  3. `LOUT` (pad 15) into the amp's IN+, amp powered from 5 V.");
+  // Audio comes up next, and stays silent. Order matters for diagnosis: if the
+  // I2S driver failed here it would abort via ESP_ERROR_CHECK with a message,
+  // before the radio is up to confuse things.
+  audio_init();
+  Serial.println("[audio] I2S up. Nothing plays until a button is pressed.");
+
+#if BRAIN_BOOT_BEEP
+  // The beep itself is driven from loop() (see there): a single 1 s window right
+  // after a reset turned out to be far too easy to miss, and "I didn't catch it"
+  // costs a whole flash cycle. It now repeats.
+  Serial.println("[diag] BRAIN_BOOT_BEEP=1: beeping every 10 s from now.");
+#endif
+
+#if BRAIN_NO_RADIO
+  Serial.println("[diag] BRAIN_NO_RADIO=1: no SoftAP, no web server.");
+#else
+  start_access_point();
+
+  const int srv = app::server_start();
+  if (srv != ESP_OK) {
+    Serial.printf("[http] server FAILED to start: %s (0x%04x)\n",
+                  esp_err_to_name((esp_err_t)srv), (unsigned)srv);
+    return;
+  }
+#endif  // BRAIN_NO_RADIO
+
+#if !BRAIN_NO_RADIO
   Serial.println();
+  Serial.println("[http] endpoints -- TWO servers, on two ports:");
+  Serial.println("  :80     /          the page: stream, sound buttons, level buttons");
+  Serial.println("  :80     /capture   one JPEG snapshot");
+  Serial.println("  :80     /status    JSON: heap, psram, clients, fps, audio, volume");
+  Serial.println("  :80     /control   GET|POST sensor settings, LED colour, ?vol=0..1000");
+  Serial.println("  :80     /play      GET|POST ?src=beeps|clip[&vol=0..1000]  (non-blocking)");
+  Serial.println("  :81     /stream    multipart MJPEG  <-- the video");
+  Serial.println();
+  Serial.println("  The stream is on its own port because its handler never returns while");
+  Serial.println("  a client is watching, and one httpd task serves one request at a time.");
+  Serial.println("  Sharing a port would freeze /play, /status and /control whenever the");
+  Serial.println("  video is being watched.");
+  Serial.println();
+  Serial.println("[http] try, from a device joined to the AP:");
+  Serial.printf("         curl http://%s/status\n", WiFi.softAPIP().toString().c_str());
+  Serial.printf("         curl 'http://%s/play?src=beeps&vol=10'\n",
+                WiFi.softAPIP().toString().c_str());
+  Serial.printf("         curl 'http://%s/control?framesize=qvga'\n",
+                WiFi.softAPIP().toString().c_str());
+  Serial.println();
+  Serial.println("[led] dim blue = idle, green = streaming, white = playing audio.");
+  Serial.println("      Setting a colour turns status mode off until ?led_auto=1.");
+  Serial.println();
+#endif  // !BRAIN_NO_RADIO
 }
 
 void loop() {
-  play_clip();
-  play(0, 1500);  // audible gap, so a repeat reads as a repeat
+  const uint32_t now = millis();
+
+#if BRAIN_BOOT_BEEP
+  // DIAGNOSTIC ONLY -- compiled out of the real build.
+  //
+  // This is the only place in the firmware that makes a sound without being asked,
+  // and it exists purely so the audio can be judged with no radio in the picture,
+  // i.e. when /play cannot be reached. It repeats every 10 s because one shot right
+  // after a reset is easy to miss.
+  //
+  // Watch the LED as well as listening: led_task() turns it white while audio is
+  // playing, so a white flash every 10 s means the audio path ran even if you
+  // heard nothing -- which separates "no sound is being generated" from
+  // "sound is generated but not audible".
+  static uint32_t next_beep = 2000;  // ms since boot; first one 2 s in
+  if (now >= next_beep) {
+    next_beep = now + 10000;
+    audio_request_beeps();
+    Serial.println("[diag] beeps requested (repeats every 10 s)");
+  }
+#endif
+
+  app::led_task(now);
+
+  static uint32_t last_report = 0;
+  if (now - last_report >= 5000) {
+    last_report = now;
+    Serial.printf("[hb] up %lus  heap %u  psram %u  clients %u  fps %u  audio %s\n",
+                  (unsigned long)(now / 1000), (unsigned)ESP.getFreeHeap(),
+                  (unsigned)ESP.getFreePsram(), (unsigned)app::stream_clients(),
+                  (unsigned)app::fps(), audio_now_playing());
+  }
+
+  // Nothing to do here, and that is the design: the camera runs in the stream
+  // handler, the radio runs itself, and the audio runs in its own task. This loop
+  // only reports. Core 1 stays free for the control task that plan section 10.1
+  // pins here at priority 5, so keep this cheap.
+  delay(20);
 }
