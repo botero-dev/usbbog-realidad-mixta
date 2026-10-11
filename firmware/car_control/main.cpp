@@ -1,6 +1,8 @@
 #include <Arduino.h>
 #include "motor.h"
 
+// UART2 TX (GPIO17) on the classic ESP32.
+const int TX2_PIN = 17;
 
 const int MAX_DUTY      = (1 << PWM_BITS) - 1;
 const int STEP_DELAY_MS = 1;
@@ -25,6 +27,10 @@ void motor_test_loop() {
 }		
 
 void setup() {
+	// Drive TX2 high as soon as the app starts.
+	pinMode(TX2_PIN, OUTPUT);
+	digitalWrite(TX2_PIN, HIGH);
+
 	motor_init();
 	motor_test_loop();
 	delay(3000);

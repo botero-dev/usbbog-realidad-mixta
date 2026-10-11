@@ -1,0 +1,13 @@
+# Build byproducts — regenerate with `make -C hardware ...` (see README.md).
+car.net
+car.xml
+car.csv
+car.png
+erc.rpt
+svg/
+
+# KiCad's own local-history store (a git repo inside the project).
+.history/
+
+# KiCad per-user UI state (window positions, last-used layers...).
+*.kicad_prl
