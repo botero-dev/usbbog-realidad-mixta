@@ -165,12 +165,12 @@ The net table in `wiring.md` should match `circuit-plan.md` §3 and §4. Spot ch
 | --- | --- |
 | S3 `GPIO43` → R → Pico `GP16`/`GP17` | `S3_TXD` → `R1` → `LINK_RX_PICO` (`U2.22`, GP17) |
 | Pico `GP16` → R → S3 `GPIO44` | `PICO_TXD` (`U2.21`, GP16) → `R2` → `LINK_RX_S3` (`U1.2`) |
-| BMI160 on `GPIO1`/`GPIO2`, addr 0x68 | `I2C_SDA`/`I2C_SCL`; `U5.4` CS → 3V3, `U5.7` SDO → GND |
-| `I²S` `48`/`47`/`21` | `I2S_BCK` → `U6.2`, `I2S_DIN` → `U6.3`, `I2S_LRCK` → `U6.4` — all **direct**, no external series parts. Header positions 15/16/17, adjacent |
+| BMI160 on `GPIO42` (`SCL`) / `GPIO41` (`SDA`), addr **0x69** | **Four wires only**: `+5V` → `U5.VIN`, GND, `I2C_SDA` → `U5.SDA`, `I2C_SCL` → `U5.SCL`, from `U1.R6` / `U1.R5`. `U5.CS` and `U5.SA0` are **left open** — the module pulls both high, so `CS` gives I²C mode and the address is **0x69**, not 0x68 |
+| `I²S` `45`/`47`/`21` — signals permuted 2026-10-11 | `I2S_BCK` (from `U1.R16` / `GPIO47`) → `U6.2`, `I2S_DIN` (`U1.R17` / `GPIO21`) → `U6.3`, `I2S_LRCK` (`U1.R14` / `GPIO45`) → `U6.4` — all **direct**, no external series parts. Header order maps to pads 4/2/3, so the ribbon **crosses** |
 | `STBY` on `GP28` via 1 kΩ | `STBY_PICO` (`U2.34`) → `R5` → `MOT_STBY` → `U3.JP2-4`, `U4.JP2-4`, `SW1.1` |
-| Strip on `45`; `48` shared with I²S | `S3_LED` → `R6` → `LED_STRIP_DIN`; `U1.R15` (`GPIO48`) carries `I2S_BCK` and also feeds the on-board WS2812 |
+| Strip on `48`; `45` carries `LRCK` | `S3_LED` → `R6` → `LED_STRIP_DIN`; `U1.R15` (`GPIO48`) is the strip **and** the on-board WS2812, same net. `U1.R14` (`GPIO45`) carries `I2S_LRCK` — `45` is the `VDD_SPI` strap |
 | ROB-14450 `VCC` from the Pico's 3V3 | `+3V3_PICO` → `U3.JP1-7`, `U4.JP1-7` |
-| Pico on 5 V through a Schottky | `+5V` (LM2596) → `D1` → `VSYS` → `U2.39` |
+| Pico on 5 V through a 0 Ω link | `+5V` (LM2596) → `R7` → `VSYS` → `U2.39` — **the Schottky is gone**, so either USB port powers both boards (§7.2 of the plan) |
 | Motor rail is separate and regulated | `VBAT` → `PS2` (LM2596) → `+5V`; `VBAT` → `PS1` (XL4015, **8.0 V**, set for 1 A/motor stall) → `VM_MOTOR` → `U3.JP1-8`, `U4.JP1-8` |
 
 If a row here disagrees with `wiring.md`, the plan document is wrong and the

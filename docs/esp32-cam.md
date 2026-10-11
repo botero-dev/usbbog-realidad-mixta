@@ -199,6 +199,20 @@ on-board WS2812 / a strip (§12) and `1, 2, 21, 38–45, 47` become spare.
 
 ## 7. Suggested assignments
 
+> ⚠️ **Superseded — `circuit-plan.md` is the pin authority.** This section is the option
+> analysis that *led to* the two-MCU design, and the single-MCU options below still carry
+> the **original** assignments. Three corrections apply to every table in this section:
+> * **I²S** was `3`/`46`/`14`; it is now **`45`/`47`/`21`** (`circuit-plan.md` §2.1) — the
+>   move that recovered `38`–`40` for the microSD slot. It was briefly `48`/`47`/`21`;
+>   `48` went back to the LED strip on 2026-10-11, which makes the on-board WS2812 usable
+>   again.
+> * **`STBY`** was `45` on the S3; it is now **`GP28` on the Pico**.
+> * **Twelve motor lines** were on the S3; now the **S3 touches no motor pin at all** — the
+>   RP2040 owns them (§1, §3 of the plan).
+>
+> **Do not wire from these tables.** They are kept because they record *why* the design is
+> shaped the way it is, which is worth having when the question comes up again.
+
 Split by function: **the motors own the whole usable right row, I²S owns the left
 row** (`3`, `46`, `14`), and the camera keeps the rest of the left row (4–13,
 15–18). That is possible because the right row exposes exactly 13 usable pins,
@@ -308,10 +322,10 @@ left for encoders.
 | Function | Pico pin | Note |
 | --- | --- | --- |
 | TB6612 #1 — `PWMA` … `PWMB` | GP0–GP5 | PWM 0A/2B + 4 direction lines |
-| TB6612 #2 — `PWMA` … `PWMB` | GP6–GP11 | PWM 3A/5B + 4 direction lines |
+| TB6612 #2 — `PWMA` … `PWMB` | GP10–GP15 | PWM 5A/7B + 4 direction lines |
 | `STBY` (both chips) | GP28 | software kill |
 | Link to the S3-CAM | GP16 TX → S3 RX · GP17 RX ← S3 TX | UART0's *third* pin pair |
-| Left over | GP12–GP15, GP18–GP22, GP25 (LED), GP26/GP27 (ADC) | encoders, battery/current sense |
+| Left over | GP6–GP9, GP18–GP22, GP25 (LED), GP26/GP27 (ADC) | encoders, battery/current sense |
 
 **15 pins used of the 26 exposed on a Pico — 11 spare**, and the S3 still needs none
 of them. Final pinout is `circuit-plan.md` §3; this table is the option as first
@@ -420,13 +434,16 @@ as they are bonded to the PSRAM die inside the module.
    existing `esp32dev`?**
 4. ✅ TB6612FNG it is, with `STBY` on `45` (its internal 200 kΩ pull-down does the
    `VDD_SPI` strap as a side effect). Any other driver needs re-checking.
-5. PCM5102A + amplifier/speaker, or a MAX98357A straight into a speaker?
-6. ✅ `48` carries the WS2812 — **resolved in favour of freeing it for I²S**, not for an
-   LED. `48` became I²S `BCK` (part of an adjacent trio at header #15–#17 with `47`
-   and `21`), the strip moved to `45`, and the on-board LED was given up. The payoff
-   was `38`/`39`/`40` back as the on-board microSD slot plus `39`–`42` back as JTAG —
-   see `circuit-plan.md` §2.1. This is the option §7 listed as "pick pins that are
-   physically adjacent on the header", taken literally.
+5. ✅ PCM5102A + amplifier/speaker — confirmed against the hardware in hand 2026-10-11.
+   The MAX98357A alternative stays noted in §8 for the record only.
+6. ✅ `48` carries the WS2812 — **resolved, and then re-resolved.** It was first freed for
+   I²S (`48` as `BCK`, part of an adjacent trio at header #15–#17 with `47` and `21`, with
+   the strip moved to `45` and the on-board LED given up). On **2026-10-11 the strip went
+   back to `48`** and the trio's signals were permuted (`47` `BCK` / `21` `DIN` / `45`
+   `LRCK`), so the on-board LED is a usable status light again and the DAC ribbon now
+   crosses. What survives from the whole episode is
+   `38`/`39`/`40` as the on-board microSD slot — and **not** the JTAG half, since `41`/`42`
+   went to I²C (§2.4 of the plan). See `circuit-plan.md` §2.1 for the full accounting.
 7. BMI sensor: **BMI160** (no config blob, easiest to bring up) or **BMI270**
    (Bosch's current part, needs an ~8 KB config file at every boot)? And poll it
    over I²C, or spend a third pin on `INT1` for wake-on-motion? Also: which MCU
@@ -596,10 +613,9 @@ GPIO:
 > or B turns the on-board LED into exactly that — no extra hardware, no extra pin.
 >
 > On the **two-MCU** plans (§7 Options 2/3) this whole question disappears: with no
-> motor pins on the S3, `48` stays the on-board LED's data line **and the strip gets a
-> pin of its own** — in `circuit-plan.md` that is `47`, with `48` left alone. Hanging
-> a strip on `48` itself still works, but it sits in *parallel* with the on-board LED
-> (both show pixel 0), not in a chain.
+> motor pins on the S3, `48` is free for LED data. Where `circuit-plan.md` ended up is
+> on `48` itself — the strip **in parallel** with the on-board LED, both showing pixel 0,
+> after `48` was briefly spent on I²S `BCK` and then reclaimed (§2.1 of the plan).
 
 ---
 
@@ -661,7 +677,8 @@ matrix.
 * On the S3 the read is a plain I²C transaction in a task: no DMA, no ULP, no
   PSRAM involvement. Putting it on the Pico would be the same, but the pins that
   idea used (`GP16`/`GP17`) are now the link to the S3 — so the IMU stays on the
-  S3's `1`/`2` bus, as the plan has it.
+  S3's I²C bus, which since 2026-10-11 is **`41`/`42`**, not `1`/`2`
+  (`circuit-plan.md` §2.4). The `1`/`2` in the option tables below is historical.
 
 **Where it goes — summary.**
 

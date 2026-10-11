@@ -12,18 +12,18 @@ Derived from `car.kicad_sch`. Build to this list, one row at a time.
 | `U2` | Raspberry Pi Pico (RP2040) - 1-40 header |
 | `U3` | SparkFun ROB-14450  #1  (left: FL=A, RL=B) |
 | `U4` | SparkFun ROB-14450  #2  (right: RR=A, FR=B) |
-| `U5` | BMI160 breakout |
+| `U5` | BMI160 breakout (VIN 3-5 V; own 3V3 reg + 3.9k pull-ups) |
 | `U6` | PCM5102A DAC (on-board 3V3 reg, VIN = 5 V) |
 | `U7` | PAM8302A class-D amp |
 | `PS1` | XL4015 buck 5 A -> MOTOR RAIL = 8.0 V |
 | `PS2` | LM2596 buck 3 A -> 5.0 V LOGIC |
 | `BT1` | 3S LiPo 11.1 V (9.0-12.6 V) |
 | `F1` | fuse 7.5 A |
-| `D1` | BAT54 Schottky |
+| `R7` | 0R link (no Schottky) |
 | `R1` | 1k  UART series |
 | `R2` | 1k  UART series |
-| `R3` | 4.7k I2C pull-up (DNP?) |
-| `R4` | 4.7k I2C pull-up (DNP?) |
+| `R3` | 4.7k pull-up (DO NOT FIT) |
+| `R4` | 4.7k pull-up (DO NOT FIT) |
 | `R5` | 1k  STBY series |
 | `R6` | 330R strip series |
 | `SW1` | E-stop (NC, optional) |
@@ -38,12 +38,12 @@ Derived from `car.kicad_sch`. Build to this list, one row at a time.
 
 | Net | Connections |
 | --- | --- |
-| `GND` | U1.R20 GND · U2.3 GND · U2.8 GND · U2.13 GND · U2.18 GND · U2.23 GND · U2.28 GND · U2.33 AGND · U2.38 GND · U3.JP1-1 GND · U3.JP1-6 GND · U3.JP2-8 GND · U4.JP1-1 GND · U4.JP1-6 GND · U4.JP2-8 GND · U5.3 GND · U5.7 SDO · U6.5 GND · U6.12 AGND · U6.14 AGND · U7.2 GND · U7.5 IN- · PS1.2 IN- · PS1.4 OUT- · PS2.2 IN- · PS2.4 OUT- · BT1.2  · SW1.2  · LED1.2 GND |
+| `GND` | U1.R20 GND · U2.3 GND · U2.8 GND · U2.13 GND · U2.18 GND · U2.23 GND · U2.28 GND · U2.33 AGND · U2.38 GND · U3.JP1-1 GND · U3.JP1-6 GND · U3.JP2-8 GND · U4.JP1-1 GND · U4.JP1-6 GND · U4.JP2-8 GND · U5.GND GND · U6.5 GND · U6.12 AGND · U6.14 AGND · U7.2 GND · U7.5 IN- · PS1.2 IN- · PS1.4 OUT- · PS2.2 IN- · PS2.4 OUT- · BT1.2  · SW1.2  · LED1.2 GND |
 | `VBAT_RAW` | BT1.1  · F1.1  |
 | `VBAT` | PS1.1 IN+ · PS2.1 IN+ · F1.2  |
-| `+5V` | U1.L20 5V · U6.6 VIN · U7.1 VDD · PS2.3 OUT+ · D1.1  · LED1.1 VDD |
-| `VSYS` | U2.39 VSYS · D1.2  |
-| `+3V3_S3` | U1.L1 3V3 · U5.1 VDD · U5.2 VDDIO · U5.4 CS · R3.1  · R4.1  |
+| `+5V` | U1.L20 5V · U5.VIN VIN · U6.6 VIN · U7.1 VDD · PS2.3 OUT+ · R7.1  · LED1.1 VDD |
+| `VSYS` | U2.39 VSYS · R7.2  |
+| `+3V3_S3` | U1.L1 3V3 · R3.1  · R4.1  |
 | `+3V3_PICO` | U2.36 3V3 out · U3.JP1-7 VCC · U4.JP1-7 VCC |
 | `AUDIO_L` | U6.15 LOUT · U7.4 IN+ |
 | `DRV1_AIN1` | U2.2 GP1 · U3.JP2-3 AIN1 |
@@ -52,17 +52,17 @@ Derived from `car.kicad_sch`. Build to this list, one row at a time.
 | `DRV1_BIN2` | U2.5 GP3 · U3.JP2-6 BIN2 |
 | `DRV1_PWMA` | U2.1 GP0 · U3.JP2-1 PWMA |
 | `DRV1_PWMB` | U2.7 GP5 · U3.JP2-7 PWMB |
-| `DRV2_AIN1` | U2.10 GP7 · U4.JP2-3 AIN1 |
-| `DRV2_AIN2` | U2.11 GP8 · U4.JP2-2 AIN2 |
-| `DRV2_BIN1` | U2.14 GP10 · U4.JP2-5 BIN1 |
-| `DRV2_BIN2` | U2.12 GP9 · U4.JP2-6 BIN2 |
-| `DRV2_PWMA` | U2.9 GP6 · U4.JP2-1 PWMA |
-| `DRV2_PWMB` | U2.15 GP11 · U4.JP2-7 PWMB |
-| `I2C_SCL` | U1.R4 GPIO2 ADC1_CH1 · U5.6 SCL · R4.2  |
-| `I2C_SDA` | U1.R3 GPIO1 ADC1_CH0 · U5.5 SDA · R3.2  |
-| `I2S_BCK` | U1.R15 GPIO48 WS2812 · U6.2 BCK |
-| `I2S_DIN` | U1.R16 GPIO47 · U6.3 DIN |
-| `I2S_LRCK` | U1.R17 GPIO21 · U6.4 LCK |
+| `DRV2_AIN1` | U2.15 GP11 · U4.JP2-3 AIN1 |
+| `DRV2_AIN2` | U2.16 GP12 · U4.JP2-2 AIN2 |
+| `DRV2_BIN1` | U2.19 GP14 · U4.JP2-5 BIN1 |
+| `DRV2_BIN2` | U2.17 GP13 · U4.JP2-6 BIN2 |
+| `DRV2_PWMA` | U2.14 GP10 · U4.JP2-1 PWMA |
+| `DRV2_PWMB` | U2.20 GP15 · U4.JP2-7 PWMB |
+| `I2C_SCL` | U1.R5 GPIO42 MTMS · U5.SCL SCL · R4.2  |
+| `I2C_SDA` | U1.R6 GPIO41 MTDI · U5.SDA SDA · R3.2  |
+| `I2S_BCK` | U1.R16 GPIO47 · U6.2 BCK |
+| `I2S_DIN` | U1.R17 GPIO21 · U6.3 DIN |
+| `I2S_LRCK` | U1.R14 GPIO45 VSPI · U6.4 LCK |
 | `LED_STRIP_DIN` | R6.2  · LED1.3 DIN |
 | `LINK_RX_PICO` | U2.22 GP17 · R1.2  |
 | `LINK_RX_S3` | U1.R2 GPIO44 U0RXD · R2.2  |
@@ -76,7 +76,7 @@ Derived from `car.kicad_sch`. Build to this list, one row at a time.
 | `MOT_RR_B` | U4.JP1-4 A02 · M3.2  |
 | `MOT_STBY` | U3.JP2-4 STBY · U4.JP2-4 STBY · R5.2  · SW1.1  |
 | `PICO_TXD` | U2.21 GP16 · R2.1  |
-| `S3_LED` | U1.R14 GPIO45 VSPI · R6.1  |
+| `S3_LED` | U1.R15 GPIO48 WS2812 · R6.1  |
 | `S3_TXD` | U1.R1 GPIO43 U0TXD · R1.1  |
 | `SPK_A` | U7.6 OUT+ · SP1.1  |
 | `SPK_B` | U7.7 OUT- · SP1.2  |

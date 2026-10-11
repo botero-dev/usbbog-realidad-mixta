@@ -197,8 +197,15 @@ TB6612_L = [("JP1-1", "GND"), ("JP1-2", "B01"), ("JP1-3", "B02"), ("JP1-4", "A02
 TB6612_R = [("JP2-1", "PWMA"), ("JP2-2", "AIN2"), ("JP2-3", "AIN1"), ("JP2-4", "STBY"),
             ("JP2-5", "BIN1"), ("JP2-6", "BIN2"), ("JP2-7", "PWMB"), ("JP2-8", "GND")]
 
-BMI_L = [("1", "VDD"), ("2", "VDDIO"), ("3", "GND"), ("4", "CS")]
-BMI_R = [("5", "SDA"), ("6", "SCL"), ("7", "SDO"), ("8", "INT1")]
+# BMI160 breakout, drawn as the USER'S ACTUAL MODULE reads -- 5 pins down the left,
+# 7 down the right, top to bottom on each side. This is deliberately NOT the bare chip's
+# datasheet pinout (VDD/VDDIO/SDO): the VIN / 3V3 split is the giveaway that the board
+# carries its own 3.3 V regulator, with VIN as its input and 3V3 as its output -- and 3V3
+# is also the rail the module's own 3.9k I2C pull-ups sit on.
+BMI_L = [("OCS", "OCS"), ("INT2", "INT2"), ("INT1", "INT1"),
+         ("SCX", "SCx"), ("SDX", "SDx")]
+BMI_R = [("VIN", "VIN"), ("3V3", "3V3"), ("GND", "GND"), ("SCL", "SCL"),
+         ("SDA", "SDA"), ("CS", "CS"), ("SA0", "SA0")]
 
 # PCM5102A breakout, drawn as the board's own two headers (each listed top to bottom,
 # exactly as the silkscreen reads).
@@ -265,40 +272,59 @@ INSTANCES = [
         # right row
         "R1":  "S3_TXD",       # GPIO43 -> R1 -> Pico GP17
         "R2":  "LINK_RX_S3",   # <- Pico GP16 -> R2
-        "R3":  "I2C_SDA", "R4": "I2C_SCL",
-        # I2S sits on 48/47/21 = header positions 15/16/17, three ADJACENT pins, and
-        # in the same top-to-bottom order as the DAC board's own header, so the
-        # ribbon runs straight across with no crossings.
-        "R15": "I2S_BCK",      # GPIO48 -> DAC pad 2. WARNING: the on-board WS2812
-                               # data input is on 48 too - unbuffered, same net.
-        "R16": "I2S_DIN",      # GPIO47 -> DAC pad 3
-        "R17": "I2S_LRCK",     # GPIO21 -> DAC pad 4
-        "R14": "S3_LED",       # GPIO45 -> R6 (330R) -> strip. 45 is the VDD_SPI
-                               # strap; the strip's data input is high-Z so it
-                               # cannot fight the internal pull-down.
+        # I2C moved here from R3/R4 (GPIO1/GPIO2) on 2026-10-11, at the user's
+        # request. 41/42 are not strapping pins, are not bonded to the PSRAM die and
+        # are not USB, so they were genuinely free.
+        # SCL on R5 and SDA on R6 matches the BMI160 module's own top-to-bottom order
+        # (VIN, 3V3, GND, SCL, SDA, CS, SA0), so the pair runs parallel with no
+        # crossing. Electrically arbitrary - the S3 GPIO matrix routes I2C anywhere.
+        # COST: JTAG over the header is now impossible. It needs 39-42 as a set and
+        # 41 (MTDI) / 42 (MTMS) are spent here. The chip's own USB Serial/JTAG on
+        # 19/20 remains, but it shares the USB pins with USB CDC - one or the other.
+        "R5":  "I2C_SCL",      # GPIO42
+        "R6":  "I2C_SDA",      # GPIO41
+        # Two edits on 2026-10-11, both at the user's request.
+        # 1) The strip went BACK to R15 (GPIO48), where it started. R15 is ALSO the
+        #    on-board WS2812's data input -- unbuffered, same net -- so the strip sits
+        #    in parallel with that LED and the LED works as a status light again.
+        # 2) The trio kept its pins (R14/R16/R17) but PERMUTED its signals:
+        #    LRCK / BCK / DIN.
+        #    In header order the pins now map to DAC pads 4/2/3 (down, up, up), so the
+        #    ribbon to the DAC's contiguous BCK/DIN/LCK pads has to CROSS. A straight
+        #    ribbon needs the MIDDLE header pin (R16/GPIO47) to carry DIN, i.e. pad 3.
+        #    Known and accepted: a tidiness cost, not a functional one -- the S3 GPIO
+        #    matrix carries any I2S signal on any pin.
+        # R14/GPIO45 is the VDD_SPI strap and carries a clock either way (BCK before,
+        # LRCK now) -- safe: the DAC input is high-Z, and the strap samples only at
+        # reset.
+        "R14": "I2S_LRCK",     # GPIO45 -> DAC pad 4
+        "R16": "I2S_BCK",      # GPIO47 -> DAC pad 2
+        "R17": "I2S_DIN",      # GPIO21 -> DAC pad 3
+        "R15": "S3_LED",       # GPIO48 -> R6 (330R) -> strip. Also the on-board
+                               # WS2812 data input, unbuffered on the same net.
         "R20": "GND",
-        # 38/39/40 and 39-42 are now FREE (on-board microSD slot, and JTAG) because
-        # I2S no longer uses 40/41/42.
+        # 38/39/40 are free (the on-board microSD slot) because I2S no longer uses
+        # 40. 41/42 went to I2C above, so JTAG-over-header is off the table.
         # everything else is a deliberate no-connect: the 14 camera pins on the left
         # row, the dead PSRAM pins, BOOT/USB, and the strapping pins.
     }),
     ("U2", "Raspberry Pi Pico (RP2040) - 1-40 header", "Pico-RP2040", 185, 68, {
-        # Each driver gets a CONTIGUOUS 6-pin block - GP0-5 for #1, GP6-11 for #2 - and
-        # both blocks use the SAME order: PWMA, AIN1, AIN2, BIN2, BIN1, PWMB. The B
-        # pair is deliberately reversed relative to the A pair so the two harnesses
-        # come out as mirror images, which suits two mirrored driver boards.
+        # Each driver gets a CONTIGUOUS 6-pin block - GP0-5 for #1, GP10-15 for #2 -
+        # and both blocks use the SAME order: PWMA, AIN1, AIN2, BIN2, BIN1, PWMB.
+        # The B pair is deliberately reversed relative to the A pair so the two
+        # harnesses come out as mirror images, which suits two mirrored boards.
         "1":  "DRV1_PWMA",    # GP0  PWM slice 0A
         "2":  "DRV1_AIN1",    # GP1
         "4":  "DRV1_AIN2",    # GP2
         "5":  "DRV1_BIN2",    # GP3
         "6":  "DRV1_BIN1",    # GP4
         "7":  "DRV1_PWMB",    # GP5  PWM slice 2B
-        "9":  "DRV2_PWMA",    # GP6  PWM slice 3A
-        "10": "DRV2_AIN1",    # GP7
-        "11": "DRV2_AIN2",    # GP8
-        "12": "DRV2_BIN2",    # GP9
-        "14": "DRV2_BIN1",    # GP10
-        "15": "DRV2_PWMB",    # GP11 PWM slice 5B
+        "14": "DRV2_PWMA",    # GP10 PWM slice 5A
+        "15": "DRV2_AIN1",    # GP11
+        "16": "DRV2_AIN2",    # GP12
+        "17": "DRV2_BIN2",    # GP13
+        "19": "DRV2_BIN1",    # GP14
+        "20": "DRV2_PWMB",    # GP15 PWM slice 7B
         # Link: UART0's TX/RX is routable ONLY to GP0/1, GP12/13, GP16/17 and GP28/29.
         # GP14/GP15 are UART0's CTS/RTS and cannot carry the link at all, so this is
         # the next genuine pair after the motor block.
@@ -311,9 +337,11 @@ INSTANCES = [
         "23": "GND", "28": "GND", "33": "GND", "38": "GND",
         "36": "+3V3_PICO",
         "39": "VSYS",
-        # Free: GP12-GP15 (4) and GP18-GP22 (5), plus GP26/GP27 (ADC0/1).
+        # Free: GP6-GP9 (4 contiguous) and GP18-GP22 (5), plus GP26/GP27 (ADC0/1).
         # GP23-25 are not on the header; GP25 is the LED on a non-W Pico.
-        # NB the link costs the old GP14-GP22 contiguous block - it is now split.
+        # NB putting driver #2 on GP10-15 spends GP12/GP13, which were the LAST spare
+        # UART0 TX/RX pair - the link is now effectively pinned to GP16/GP17.
+        # In exchange GP6-GP9 frees up, which can carry UART1 (GP8/9) or I2C1 (GP6/7).
         # 19-22,24-27,29-32,35,37,40 spares ... but note pin 35 is ADC_VREF, not a GPIO.
     }),
 
@@ -338,12 +366,26 @@ INSTANCES = [
     }),
 
     # ---- sensors -----------------------------------------------------------
-    ("U5", "BMI160 breakout", "BMI160", 230, 114, {
-        "1": "+3V3_S3", "2": "+3V3_S3", "3": "GND",
-        "4": "+3V3_S3",          # CS high => I2C mode
-        "5": "I2C_SDA", "6": "I2C_SCL",
-        "7": "GND",              # SDO low  => address 0x68
-        # 8 INT1 polled, not wired
+    ("U5", "BMI160 breakout (VIN 3-5 V; own 3V3 reg + 3.9k pull-ups)", "BMI160",
+     230, 114, {
+        "VIN": "+5V",         # the module's own LDO input. 5 V on purpose: a 3.3 V LDO
+                               # cannot regulate from 3.3 V in, so feeding it 3V3 would
+                               # just pass ~3.0 V through.
+        "GND": "GND",
+        "SCL": "I2C_SCL", "SDA": "I2C_SDA",
+        # That is the WHOLE connection: four wires. Everything else on this module is
+        # either unused or already strapped by the board itself:
+        #   3V3  - the regulator's OUTPUT. Its only job is feeding the module's internal
+        #          pull-ups, so nothing external hangs off it.
+        #   CS   - the module pulls it UP with a 3.9k, so I2C mode is the default and it
+        #          needs no strap. Tying it to 3V3 would just burn 0.85 mA through that
+        #          resistor. (Tying it to GND would select SPI and silence the chip.)
+        #   SA0  - also pulled UP by its own 3.9k, so leaving it open gives address 0x69,
+        #          NOT the 0x68 that examples assume. Tying it to GND gives 0x68 at the
+        #          cost of a wire and another 0.85 mA.
+        #   INT1, INT2 - polled, not wired (plan section 5.2)
+        #   SCx, SDx   - auxiliary I2C for an external magnetometer, unused here
+        #   OCS        - UNCONFIRMED. See the hypothesis in plan section 5.
     }),
 
     # ---- audio -------------------------------------------------------------
@@ -374,15 +416,23 @@ INSTANCES = [
     ("BT1", "3S LiPo 11.1 V (9.0-12.6 V)", "Battery", 30, 242,
      {"1": "VBAT_RAW", "2": "GND"}),
     ("F1", "fuse 7.5 A", "Fuse", 92, 242, {"1": "VBAT_RAW", "2": "VBAT"}),
-    ("D1", "BAT54 Schottky", "D-Schottky", 100, 182, {"1": "+5V", "2": "VSYS"}),
+    # WAS a BAT54 Schottky ("D1"). Removed 2026-10-10 at the user's request so that
+    # EITHER USB port powers BOTH boards. It is now a 0R link, which is what ties the
+    # Pico's VSYS to the +5V rail. Cut it and fit a Schottky (cathode to VSYS) to get
+    # the old isolation back. See docs/circuit-plan.md 7.2.
+    ("R7", "0R link (no Schottky)", "R", 100, 182, {"1": "+5V", "2": "VSYS"}),
 
     # ---- series / pull-up glue --------------------------------------------
     # No I2S series resistors here: the PCM5102A board already has one in line with
     # each of BCK / DIN / LRCK, so the three I2S lines run straight from the S3.
     ("R1", "1k  UART series", "R", 35, 150, {"1": "S3_TXD", "2": "LINK_RX_PICO"}),
     ("R2", "1k  UART series", "R", 97, 150, {"1": "PICO_TXD", "2": "LINK_RX_S3"}),
-    ("R3", "4.7k I2C pull-up (DNP?)", "R", 159, 150, {"1": "+3V3_S3", "2": "I2C_SDA"}),
-    ("R4", "4.7k I2C pull-up (DNP?)", "R", 221, 150, {"1": "+3V3_S3", "2": "I2C_SCL"}),
+    # Left in the schematic ON PURPOSE, but NOT to be fitted: the user's BMI160 module
+    # carries its own I2C pull-ups -- 3.9k, SMD code "392" -- to its 3V3 rail. Only one
+    # set belongs on a bus, and two in parallel just load it harder. These pads exist so
+    # a bare breakout can be swapped in later without a redesign.
+    ("R3", "4.7k pull-up (DO NOT FIT)", "R", 159, 150, {"1": "+3V3_S3", "2": "I2C_SDA"}),
+    ("R4", "4.7k pull-up (DO NOT FIT)", "R", 221, 150, {"1": "+3V3_S3", "2": "I2C_SCL"}),
     ("R5", "1k  STBY series", "R", 283, 150, {"1": "STBY_PICO", "2": "MOT_STBY"}),
     ("R6", "330R strip series", "R", 345, 150, {"1": "S3_LED", "2": "LED_STRIP_DIN"}),
     ("SW1", "E-stop (NC, optional)", "E-Stop", 35, 182, {"1": "MOT_STBY", "2": "GND"}),
