@@ -36,6 +36,7 @@
 
 #include "camera_pins.h"
 #include "esp_camera.h"
+#include "imu.h"
 
 namespace app {
 namespace {
@@ -233,6 +234,14 @@ button.lv:active{background:#18301f}
 button.lv.on{background:#3a6a44;color:#fff}
 p.lbl{color:#8aa0b0;font-size:13px;margin:18px 0 4px}
 p.lbl b{color:#cfe}
+.imu{max-width:430px;margin:0 auto 8px}
+.ir{display:flex;padding:2px 8px;color:#cde;font-variant-numeric:tabular-nums}
+.ir span{color:#8aa0b0;flex:1;text-align:left}
+.ir b{flex:1;text-align:right;font-weight:500}
+.ibar{position:relative;height:8px;background:#1b2732;margin:3px 8px;
+border-radius:4px}
+.ibar i{position:absolute;top:0;bottom:0;left:50%;width:0;background:#4a9;
+border-radius:4px}
 </style></head>
 <body>
 <h3>brain &mdash; ESP32-S3</h3>
@@ -243,7 +252,15 @@ p.lbl b{color:#cfe}
 <button onclick="ask('/play?src=clip')">sound file</button>
 </p>
 <p class="lbl">level <b><span id="lvl">?</span></b> &mdash; used by the
-<b>beeps</b> and <b>sound file</b> buttons. Picking a level plays nothing.</p>
+<b>beeps</b> and <b>sound file</b> buttons. Picking a level plays nothing.</p><p class="lbl" id="imustat">IMU: ?</p>
+<div class="imu">
+<div class="ir"><span>accel (g)</span><b id="iax">-</b><b id="iay">-</b><b id="iaz">-</b></div>
+<div class="ir"><span>gyro (&deg;/s)</span><b id="igx">-</b><b id="igy">-</b><b id="igz">-</b></div>
+<div class="ir"><span>tilt (&deg;) / temp</span><b id="ipitch">-</b><b id="iroll">-</b><b id="itemp">-</b></div>
+<div class="ibar"><i id="bax"></i></div>
+<div class="ibar"><i id="bay"></i></div>
+<div class="ibar"><i id="baz"></i></div>
+</div>
 <p>
 <button class="lv" data-vol="10" onclick="ask('/control?vol=10')">very low</button>
 <button class="lv" data-vol="20" onclick="ask('/control?vol=20')">low</button>
@@ -298,6 +315,54 @@ fetch('/status', {cache:'no-store'})
   .then(function(r){return r.json();})
   .then(show)
   .catch(function(){});
+
+// --- IMU, live ------------------------------------------------------------
+// Polled at 15 Hz. That is a DISPLAY rate and nothing more: the firmware samples
+// the sensor at 200 Hz in its own task, and this only decides how often a human
+// sees it. The handler copies the last published sample, so polling faster costs
+// the IMU task nothing at all -- it does not read the bus again.
+//
+// 1000/15 = 66.7 ms, so 66 ms keeps the real rate at or just above 15 Hz.
+function bar(id, v, full){
+  var el = document.getElementById(id);
+  var w = Math.min(Math.abs(v) / full, 1) * 50;
+  el.style.width = w + '%';
+  el.style.left = (v >= 0 ? 50 : 50 - w) + '%';
+}
+function num(id, v, dp){
+  document.getElementById(id).textContent = (v === null ? '-' : v.toFixed(dp));
+}
+function showImu(j){
+  var st = document.getElementById('imustat');
+  if(!j || !j.present){
+    st.textContent = 'IMU: not detected -- check the boot log';
+    return;
+  }
+  st.textContent = 'IMU: BMI160 at 0x69, sampling ' + j.rate + ' Hz, seq ' + j.seq
+      + (j.errors ? ('  <-- ' + j.errors + ' read errors') : '');
+  num('iax', j.ax, 3); num('iay', j.ay, 3); num('iaz', j.az, 3);
+  num('igx', j.gx, 1); num('igy', j.gy, 1); num('igz', j.gz, 1);
+  num('ipitch', j.pitch, 1); num('iroll', j.roll, 1); num('itemp', j.temp, 1);
+  bar('bax', j.ax, 2); bar('bay', j.ay, 2); bar('baz', j.az, 2);
+}
+// *** ONE REQUEST IN FLIGHT AT A TIME. ***
+// At 5 Hz a slow reply merely arrived late. At 15 Hz a reply that takes longer
+// than the interval would let setInterval stack up requests, each opening its own
+// socket, until the server's 7 are gone -- and lru_purge_enable then tears down
+// sockets that are still in use. One boolean removes the failure mode; this guard
+// is not there for speed.
+var imuBusy = false;
+function pollImu(){
+  if(imuBusy) return;
+  imuBusy = true;
+  fetch('/imu', {cache:'no-store'})
+    .then(function(r){return r.json();})
+    .then(showImu)
+    .catch(function(){})
+    .then(function(){ imuBusy = false; });
+}
+setInterval(pollImu, 66);
+pollImu();
 </script>
 </body></html>
 )HTML";
@@ -411,13 +476,14 @@ esp_err_t send_status_json(httpd_req_t *req) {
   char json[512];
   const int n = snprintf(
       json, sizeof(json),
-      "{\"heap\":%u,\"psram_free\":%u,\"clients\":%u,\"fps\":%u,"
+      "{\"heap\":%u,\"psram_free\":%u,\"ap_stations\":%u,\"clients\":%u,\"fps\":%u,"
       "\"framesize\":\"%s\",\"quality\":%d,\"brightness\":%d,\"contrast\":%d,"
       "\"saturation\":%d,\"hmirror\":%d,\"vflip\":%d,"
       "\"audio\":\"%s\",\"sample_rate\":%u,\"volume_milli\":%u,"
       "\"led_auto\":%s,\"led\":[%u,%u,%u]}\n",
       (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getFreePsram(),
-      (unsigned)g_stream_clients, (unsigned)g_fps,
+      (unsigned)WiFi.softAPgetStationNum(), (unsigned)g_stream_clients,
+      (unsigned)g_fps,
       s ? size_name(s->status.framesize) : "?",
       s ? (int)s->status.quality : -1, s ? (int)s->status.brightness : 0,
       s ? (int)s->status.contrast : 0, s ? (int)s->status.saturation : 0,
@@ -436,6 +502,33 @@ esp_err_t send_status_json(httpd_req_t *req) {
 }
 
 esp_err_t status_handler(httpd_req_t *req) { return send_status_json(req); }
+
+// /imu — the latest sample, never a read of the bus.
+//
+// The sampler task owns the bus and runs at 200 Hz; this handler only copies the
+// most recent sample, so polling it from a page costs nothing and cannot disturb
+// the timing of the sampler. `seq` is there so a client can tell "the values are
+// stable" from "the sampler stopped" -- those look identical in the numbers.
+esp_err_t imu_handler(httpd_req_t *req) {
+  ImuSample s;
+  imu_latest(&s);
+
+  char json[320];
+  const int n = snprintf(
+      json, sizeof(json),
+      "{\"present\":%s,\"who\":%u,\"seq\":%u,\"errors\":%u,\"rate\":%u,"
+      "\"ax\":%.4f,\"ay\":%.4f,\"az\":%.4f,"
+      "\"gx\":%.2f,\"gy\":%.2f,\"gz\":%.2f,"
+      "\"pitch\":%.2f,\"roll\":%.2f,\"temp\":%.1f}\n",
+      imu_present() ? "true" : "false", (unsigned)imu_who_am_i(), (unsigned)s.seq,
+      (unsigned)s.errors, (unsigned)imu_rate_hz(), s.ax, s.ay, s.az, s.gx, s.gy,
+      s.gz, s.pitch, s.roll, s.temp_c);
+
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+  return httpd_resp_send(req, json, n);
+}
 
 // /play?src=beeps | src=clip | vol=0..1000 (per-mille, optional)
 //
@@ -590,7 +683,9 @@ esp_err_t start_on_port(uint16_t port, const Route *routes, size_t n) {
   // not about the socket you asked for. Deriving it from `port` keeps the two
   // instances distinct and needs no second constant to forget.
   config.ctrl_port = 32768 + port;
-  config.max_uri_handlers = 8;
+  // 8 was the exact number of control routes before /imu arrived; the margin is
+  // deliberate, because httpd_start() fails outright if the list outgrows this.
+  config.max_uri_handlers = 12;
   // Recycle a socket if all of them are in use. Without this, one abandoned
   // browser tab can make the camera look dead to every later client.
   config.lru_purge_enable = true;
@@ -617,6 +712,7 @@ int server_start() {
       {"/", HTTP_GET, index_handler},
       {"/capture", HTTP_GET, capture_handler},
       {"/status", HTTP_GET, status_handler},
+      {"/imu", HTTP_GET, imu_handler},
       {"/play", HTTP_GET, play_handler},
       {"/play", HTTP_POST, play_handler},
       // Both verbs on purpose: a browser or curl can use GET, while anything

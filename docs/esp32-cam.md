@@ -643,11 +643,16 @@ Both BMI160 and BMI270 are **I²C *or* SPI** and both read out as 12 bytes
 (`ax, ay, az, gx, gy, gz`). `SDO` selects the address, so two of them can share one
 bus.
 
-**Bus choice: I²C at 400 kHz.** SPI would cost 4 pins (`SCK`/`MOSI`/`MISO`/`CS`);
+**Bus choice: I²C.** SPI would cost 4 pins (`SCK`/`MOSI`/`MISO`/`CS`);
 I²C costs 2. Check that your breakout has I²C pull-ups (most do) and that only one
 set is fitted on the bus. `CS` must be pulled high for I²C mode — the common
 GY-BMI160 board does this with an on-board resistor, while the Adafruit/SparkFun
 breakouts use a solder jumper.
+
+> ⚠️ **Rate it at 100 kHz on this build, not 400.** Measured 2026-10-11: at 400 kHz
+> this part ACKs and *reads* fine, but **config writes are silently dropped** — the
+> accelerometer comes up reporting 0.000 g while `PMU_STATUS` insists it is in normal
+> mode. Reads do not degrade at 400 kHz; writes do. See `circuit-plan.md` §5.
 
 > ⚠️ **Do not hang it on the camera's SCCB pins (`4`/`5`).** The addresses do not
 > collide (OV3660 = 0x3C, BMI = 0x68), but `esp32-camera` owns those two pads with
@@ -655,7 +660,9 @@ breakouts use a solder jumper.
 > real I²C controller on its own pins.
 
 **Poll or interrupt?** A 12-byte read plus the register address is ~13 bytes ≈
-330 µs at 400 kHz. Polling at 200 Hz costs ~7 % of the bus and **no pin at all**.
+330 µs at 400 kHz — **~1.3 ms at the 100 kHz this build actually runs** (see the
+warning above), i.e. ~26 % of the time at 200 Hz rather than ~7 %. Polling still costs
+**no pin at all**.
 The `INT1`/`INT2` lines only earn a GPIO when you want a **wake-on-motion,
 free-fall or tap** event, or a hardware-timed read inside a control loop. For
 odometry: budget 2 pins, add the third only when you need it.

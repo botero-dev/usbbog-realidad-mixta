@@ -115,6 +115,50 @@ WS2812 data line is not "dim" but corrupted bit timing.
 
 ---
 
+## The IMU (BMI160-family) — and what this particular part actually is
+
+Sampled at **200 Hz in its own task, pinned to core 1 at priority 5** — the slot plan
+§10.1 reserves for the control task, so the control law can join it later rather than
+move it. The I²C bus runs at **100 kHz, not the 400 kHz the plan asks for**: at 400 kHz
+this part ACKs and reads fine but its **config writes are dropped**, and the accelerometer
+comes up reporting 0.000 g. See decision 4 at the top of `src/imu.cpp`.
+
+`/imu` returns the latest sample as JSON, and the page polls it at **15 Hz** for a
+live readout with accel bars. Nothing in the HTTP path ever touches the bus: the sampler
+owns it, and a handler only copies the most recent sample.
+
+Current reading on a still board:
+
+```
+[imu] resting |a| = 1.054 g over 200 samples (still board = 1.000)
+[imu] gravity check PASSED -- the accelerometer scale is right
+[imu] a 0.287 -0.568 0.839 g | w 0.1 -0.4 -0.1 dps | tilt -15.8/-34.1 deg | 31.3 C | seq 801 err 0
+```
+
+> ⚠️ **This module is NOT a plain BMI160, and three things follow from that.**
+>
+> | What | Measured | Consequence |
+> | --- | --- | --- |
+> | `CHIP_ID` (0x00) | **`0xD1`** — correct for a BMI160 | Corrected 2026-10-11: `0xD1` **is** the BMI160's ID (Bosch's `BMI160_driver` defines `BMI160_CHIP_ID` as `0xD1`); `0x24` is the **BMI270**, which needs an ~8 KB config blob at boot. The **BMX160** reports `0xD1` too, so the ID cannot separate the two — and it does say nothing about a magnetometer. Only the silkscreen can. |
+> | `ACC_RANGE` | reads back `0x02` (±8 g) and **lies**: the data is at ±2 g | `kAccelRangeCorrection = 4.0f`. A still board read 4.20 g before this |
+> | `GYR_CONF` | reads back `0x1a`, wanted `0x9a` — the **ODR field silently does not take** | Fine for tilt. **Not fine for integrating yaw** — fix before gyro odometry depends on it |
+>
+> The rule that follows, and the reason the correction is a named constant rather than a
+> number buried in an expression: **trust the physics over the register.** A stationary
+> board *must* read 1 g, and `report_gravity()` says so out loud one second after every
+> boot, so the next board cannot hide the same mistake.
+
+Two other things here are deliberate and load-bearing:
+
+* **The I2C controller is discovered, not assumed.** The camera's SCCB bus takes one of
+  the two controllers and which one is an esp32-camera internal; the first version
+  assumed and failed at boot. The driver tries `I2C_NUM_0` then `I2C_NUM_1`.
+* **Read-only identification happens before any write.** The original code wrote a soft
+  reset (`0xB6` → register `0x7E`) *before* checking the ID — and on a part that is not a
+  BMI160, `0x7E` means something else entirely.
+
+---
+
 ## Why the camera lives here now
 
 `firmware/cam-test/` is kept, and it is still the better place to change anything about the
@@ -229,7 +273,7 @@ In order, because this is the order they actually happen:
    not an audio bug. I²S buffers stay in internal RAM (the default); that is mitigation 1
    and it is already in place.
 4. **The BMI160** — bring-up step 3 of §11. I²C on `41`/`42`, address **`0x69`** (`SA0` is
-   pulled up), `WHO_AM_I` must read `0x24`.
+   pulled up), `WHO_AM_I` must read `0xD1` (`0x24` is a BMI270).
 5. **Then the core split** from §10.1: the control task pinned to core 1 at priority 5 with
    `vTaskDelayUntil()`. `loop()` is deliberately empty so that core stays free for it; the
    audio task already owns core 0 alongside the camera and the radio.

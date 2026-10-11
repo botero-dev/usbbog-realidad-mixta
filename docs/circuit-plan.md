@@ -42,7 +42,7 @@ flowchart LR
   LM --> AMP["Class-D amp"]
 
   CAM["OV3660 FPC"] --> S3
-  IMU["BMI160"] -- "I2C 400 kHz" --> S3
+  IMU["BMI160"] -- "I2C 100 kHz (measured)" --> S3
   S3 -- "I2S" --> DAC["PCM5102A"] --> AMP --> SPK["Speaker"]
   S3 -- "UART 921600<br/>13-byte frame @ 100 Hz" --> PICO
   S3 -- "RMT" --> LED["WS2812 strip (45)<br/>on-board LED (48, now I2S BCK)"]
@@ -454,6 +454,22 @@ is answerable without a scope.
 
 ## 5. BMI160 wiring
 
+> ⚠️ **MEASURED 2026-10-11, CORRECTED THE SAME DAY: the ID is not the anomaly this
+> banner first claimed.** `CHIP_ID` (register `0x00`) reads **`0xD1`** — and `0xD1` *is*
+> the BMI160's own ID, per Bosch's driver (`BMI160_driver` v3.9.2:
+> `#define BMI160_CHIP_ID UINT8_C(0xD1)`). The earlier claim that a BMI160 reports `0x24`
+> was wrong: **`0x24` is the BMI270**, the newer part that needs an ~8 KB config blob at
+> every boot. The **BMX160** reports `0xD1` as well, so the ID cannot separate it from a
+> BMI160 — only the silkscreen can, so the magnetometer question stays open. What *is*
+> anomalous here is the registers, not the ID. On top of that, two
+> config writes do not stick the way the datasheet says: **`ACC_RANGE` holds `0x02`
+> (±8 g) while the data is actually scaled at ±2 g**, and the **`GYR_CONF` ODR field
+> silently ignores its write**. Everything below still applies — the address (`0x69`),
+> the pin assignment and the bus speed were all confirmed against the hardware — but the
+> register-semantics claims are the *datasheet's*, not this part's. Read the module's
+> silkscreen to settle which part it is; the driver in `firmware/brain/src/imu.cpp`
+> records each discrepancy where it is worked around.
+
 | Pin | Side | What it is | Connects to |
 | --- | --- | --- | --- |
 | `VIN` | right | **Supply input** to the module's regulator | **`+5V`** |
@@ -537,7 +553,22 @@ three 3.9 kΩ resistors measured on `SCL`, `SDA` and `SA0` (plus the one on `CS`
   *Worth knowing if the hypothesis is right:* `SCx`/`SDx`/`OCS` means this module is
   provisioned for an **external magnetometer**, so absolute heading (§5.3) would be a
   later addition on the same board rather than a different part.
-* **Bus speed 400 kHz.** `WHO_AM_I` (0x00) must read `0x24`.
+* **Bus speed: probe at 400 kHz, RUN at 100 kHz.** `WHO_AM_I` (0x00) must read
+  **`0xD1`** (BMI160/BMX160); `0x24` would be a **BMI270**, which needs a config blob
+  this driver does not upload.
+  > ⚠️ **MEASURED 2026-10-11: 400 kHz IS NOT USABLE ON THIS WIRING.** At 400 kHz the
+  > part ACKs and *reads* fine, but **config writes are dropped**: `ACC_CONF` read back
+  > `0x28` and `ACC_RANGE` `0x01` — neither of them a value that was written — and the
+  > accelerometer then reported **0.000 g on all three axes while `PMU_STATUS` still
+  > claimed "accel normal"**. The gyro kept working, so this is not a dead bus: it is
+  > specifically writes. At 100 kHz the same writes take and the gravity check passes at
+  > ~1.05 g. The firmware therefore pins `kBusHz = 100000` — see decision 4 at the top of
+  > `firmware/brain/src/imu.cpp`.
+  >
+  > Until this was found the project had *always* run at 100 kHz **by accident**: a wrong
+  > `CHIP_ID` constant sent identification down its 100 kHz fallback on every boot. A
+  > silent fallback is a load-bearing accident — the wrong constant was masking a
+  > hardware limit.
 * Keep the IMU wires short and away from motor and speaker leads. The whole point
   of the I²C bus being 4 wires on the same board is that it stays short.
 
@@ -555,9 +586,12 @@ three 3.9 kΩ resistors measured on `SCL`, `SDA` and `SA0` (plus the one on `CS`
 
 ### 5.2 Polling, not interrupts
 
-A 12-byte read plus the register address is ~13 bytes ≈ 330 µs at 400 kHz. Reading
-at 200 Hz costs ~7 % of the bus and **zero pins**. `INT1` would only earn a GPIO
-for wake-on-motion / tap / free-fall, which this car does not need.
+A 12-byte read plus the register address is ~13 bytes ≈ 330 µs at 400 kHz — but the bus
+runs at **100 kHz** on this wiring (§5), which makes it **~1.3 ms, about 26 % of the
+time at 200 Hz**, not ~7 %. That is a quarter of one core spent polling, and it is the
+real reason to care about the bus speed: it lands on core 1, the same core reserved for
+the control loop. `INT1` would only earn a GPIO for wake-on-motion / tap / free-fall,
+which this car does not need.
 
 ### 5.3 What a 6-axis IMU can and cannot tell you
 
@@ -1161,7 +1195,7 @@ Do not connect everything and hope. Each step is independently verifiable:
 | --- | --- | --- |
 | 1 | S3 alone: flash, USB CDC, camera capture, WiFi | framebuffer looks right in a browser; WiFi reconnects after a power cycle |
 | 2 | + PCM5102A and amp | test tone is clean, and still clean while the camera streams |
-| 3 | + BMI160 | **`0x69`** answers with `WHO_AM_I = 0x24`; gyro reads ~0 when still |
+| 3 | + BMI160 | **`0x69`** answers with `WHO_AM_I = 0xD1`; gyro reads ~0 when still |
 | 4 | Pico alone on a bench supply, **no motors** | the on-board LED lights within a fraction of a second of power-up; all 12 logic lines idle low, `STBY` low at power-up; frames from a USB-TTL adapter produce 20 kHz on a scope |
 | 5 | + the UART link | 100 Hz frames confirmed; **pull the TX wire and watch `STBY` drop within 100 ms** |
 | 6 | + one ROB-14450 and one motor, supply current-limited to 0.5 A | forward / reverse / coast / brake all correct; motor is silent |

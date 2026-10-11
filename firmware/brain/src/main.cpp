@@ -36,6 +36,7 @@
 #include "audio_player.h"
 #include "camera_pins.h"
 #include "esp_camera.h"
+#include "imu.h"
 
 // Credentials: `secrets.h` if it exists, otherwise the throwaway defaults in
 // secrets.example.h. Copy the example to set a real SSID/password; this project
@@ -296,6 +297,15 @@ void setup() {
   apply_default_orientation();
 #endif  // BRAIN_NO_CAMERA
 
+  // The IMU next, and its failure is NOT fatal. A missing or miswired sensor must
+  // not take the camera and the audio down with it -- imu_init() prints what it
+  // found on the bus and what to check, and returns false.
+  //
+  // Order matters here in one specific way: the camera's SCCB bus is installed
+  // first, and the IMU deliberately uses the OTHER I2C controller (see imu.cpp),
+  // so the two cannot fight over one.
+  imu_init();
+
   // Audio comes up next, and stays silent. Order matters for diagnosis: if the
   // I2S driver failed here it would abort via ESP_ERROR_CHECK with a message,
   // before the radio is up to confuse things.
@@ -328,6 +338,7 @@ void setup() {
   Serial.println("  :80     /          the page: stream, sound buttons, level buttons");
   Serial.println("  :80     /capture   one JPEG snapshot");
   Serial.println("  :80     /status    JSON: heap, psram, clients, fps, audio, volume");
+  Serial.println("  :80     /imu       JSON: accel, gyro, tilt, temp, seq (page polls 15 Hz)");
   Serial.println("  :80     /control   GET|POST sensor settings, LED colour, ?vol=0..1000");
   Serial.println("  :80     /play      GET|POST ?src=beeps|clip[&vol=0..1000]  (non-blocking)");
   Serial.println("  :81     /stream    multipart MJPEG  <-- the video");
@@ -378,10 +389,27 @@ void loop() {
   static uint32_t last_report = 0;
   if (now - last_report >= 5000) {
     last_report = now;
-    Serial.printf("[hb] up %lus  heap %u  psram %u  clients %u  fps %u  audio %s\n",
+    // `ap` is the number of devices ASSOCIATED with the softAP, which is a
+    // completely different thing from `clients` (stream viewers). When "nothing
+    // loads", this line is the first thing to read: ap 0 means nothing is even on
+    // the network, so the problem is Wi-Fi, not HTTP.
+    Serial.printf("[hb] up %lus  heap %u  psram %u  ap %u  clients %u  fps %u  audio %s\n",
                   (unsigned long)(now / 1000), (unsigned)ESP.getFreeHeap(),
-                  (unsigned)ESP.getFreePsram(), (unsigned)app::stream_clients(),
-                  (unsigned)app::fps(), audio_now_playing());
+                  (unsigned)ESP.getFreePsram(), (unsigned)WiFi.softAPgetStationNum(),
+                  (unsigned)app::stream_clients(), (unsigned)app::fps(),
+                  audio_now_playing());
+
+    // The IMU gets its own line so the numbers are not buried in the heartbeat.
+    // `seq` climbing steadily is the health check: values that sit still look
+    // identical whether the board is motionless or the sampler has died.
+    if (imu_present()) {
+      ImuSample imu;
+      imu_latest(&imu);
+      Serial.printf("[imu] a %.3f %.3f %.3f g | w %.1f %.1f %.1f dps | tilt "
+                    "%.1f/%.1f deg | %.1f C | seq %u err %u\n",
+                    imu.ax, imu.ay, imu.az, imu.gx, imu.gy, imu.gz, imu.pitch,
+                    imu.roll, imu.temp_c, (unsigned)imu.seq, (unsigned)imu.errors);
+    }
   }
 
   // Nothing to do here, and that is the design: the camera runs in the stream
