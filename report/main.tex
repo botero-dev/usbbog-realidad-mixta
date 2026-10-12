@@ -1,65 +1,285 @@
-% ============================================================
-%  main.tex — Informe del proyecto
-%  Control de un carro con Arduino/ESP32
-%  Formato: IEEE (clase IEEEtran, conferencia)
-% ============================================================
-\documentclass[conference]{IEEEtran}
-
-% --- Paquetes ---
-\usepackage[utf8]{inputenc}
-\usepackage[T1]{fontenc}
+\documentclass[journal]{IEEEtran}
+\hyphenation{op-tical net-works semi-conduc-tor}
 \usepackage[spanish]{babel}
 \usepackage{graphicx}
-\usepackage{amsmath}
-\usepackage{booktabs}
 \usepackage{hyperref}
-\usepackage{listings}
-\usepackage{xcolor}
-
-% --- Estilo para código ---
-\lstset{
-  basicstyle=\ttfamily\small,
-  breaklines=true,
-  frame=single,
-  keywordstyle=\color{blue},
-  commentstyle=\color{gray},
-  stringstyle=\color{red},
-  showstringspaces=false
-}
-
-% --- Metadatos ---
-\title{Control de un Carro Robótico con Arduino/ESP32}
-
-\author{
-\IEEEauthorblockN{Tu Nombre}
-\IEEEauthorblockA{Departamento / Facultad\\
-Universidad\\
-Ciudad, País\\
-correo@ejemplo.com}
-}
+\usepackage{float}
 
 \begin{document}
+\title{DISEÑO Y ANÁLISIS DE UN VEHÍCULO RC AUTÓNOMO - ENTREGABLE 1}
+\author{Andrés~Botero, Jade~Moreno, Sofía~Reina and~Vivi~Delgado}% <-this % stops a space
 
+
+% The paper headers
+\markboth{Universidad de San Buenaventura - Ingeniería Multimedia }%
+{Shell \MakeLowercase{\textit{Apellido, Nombre}}: Titulo del informe}
+% The only time the second header will appear is for the odd numbered pages
+% after the title page when using the twoside option.
+
+% make the title area
 \maketitle
 
 \begin{abstract}
-Resumen del proyecto: aquí se describe brevemente el objetivo,
-la metodología y los resultados obtenidos.
+Se muestra el diseño electromecánico y el análisis cuantitativo de un vehículo a control remoto inspirado en el personaje Rayo McQueen, construido sobre un chasis de traccióna a cuatro ruedas (4WD) con cuatro motorreductores DC, dos controladores de puente H TB6612FNG y un microcontrolador ESP32. Se especifican el chasis, la tracción, los motores y los puentes H tipo MOSFET, la arquitectura de alimentación aislada mediante un regulador LM2596 para la potencia y un módulo dual para la lógica, el cableado y el firmware en C/C++ de tipo avance-giro-detención, sin control continuo ni sensores. Se explica el análisis cuantitativo de fuerza, torque, velocidad, relación de transmisión, Ley de Ohm y la corriente de arranque, contrastando los cálculos teóricos de requerimientos mecánicos con la validación experimental del prototipo funcional.
 \end{abstract}
 
+% Note that keywords are not normally used for peerreview papers.
 \begin{IEEEkeywords}
-Arduino, ESP32, robótica móvil, control de motores.
+Microcontrolador ESP32, Ley de Ohm, Motorreductor DC, Puente H MOSFET, Relación de transmisión, Torque, Vehículo RC.
 \end{IEEEkeywords}
 
-\input{chapters/introduccion}
-\input{chapters/marco}
-\input{chapters/metodologia}
-\input{chapters/resultados}
-\input{chapters/conclusiones}
 
-% --- Bibliografía ---
-\nocite{*} % Incluye todas las referencias aunque no se citen aún
-\bibliographystyle{IEEEtran}
-\bibliography{references}
 
+\section{Introducción}
+
+\IEEEPARstart{L}{os} vehículos a control remoto (RC) son una plataforma didáctica habitual para integrar conceptos de mecánica, electrónica de potencia y programación embebida en un solo sistema físico. Este informe documenta la etapa de diseño electromecánico y firmware base de un vehículo RC con carrocería inspirada en el personaje Rayo McQueen (Cars, Pixar), manteniendo el enfoque centrado en los aspectos de ingeniería del prototipo como lo es: selección del chasis y tracción integral a cuatro ruedas (4WD), dimensionamiento de motores y transistores de alta eficiencia, arquitectura de alimentación, cableado y una rutina de firmware mínima gestionada por un microcontrolador ESP32.
+
+\section{Objetivos}
+
+\subsection{Objetivo general}
+Desarrollar un vehículo a control remoto aplicando los conceptos básicos de mecánica, electrónica y programación.
+
+\subsection{Objetivos específicos}
+\begin{itemize}
+    \item Construir un prototipo funcional capaz de ejecutar una secuencia autónoma simple (avanzar, girar, detenerse) sin retroalimentación de sensores ni de lazo de control continuo.
+    \item Realizar el análisis cuantitativo completo de las magnitudes mecánicas y eléctricas involucradas.
+    \item Implementar un firmware estructurado en C/C++ que gestione el control de los motores mediante PWM, garantizando la ejecución correcta de la secuencia de movimiento.
+\end{itemize}
+
+\section{Marco Teórico}
+%Las variables van en cursiva y se realiza escribiendolas entre $$
+\subsection{Torque y fuerza en motores DC}
+
+Un motor DC con escobillas produce un torque proporcional a la corriente de armadura:
+
+\begin{equation}
+\tau = K_t \cdot I_a
+\end{equation}
+
+donde $K_t$ es la constante del torque del motor(N·m/A), $I_a$ es la corriente de armadura, según el modelo clásico de máquinas de corriente continua. \cite{chapman} El torque disponible en la rueda depende además de la relación de transmisión de la caja reductora integrada al motor.
+
+
+\subsection{Relación de transmisión}
+La relación de transmisión N (o"gear ratio") relaciona la velocidad agular del eje del motor con la del eje de salida, como lo afirma la teoría de trenes de engranajes \cite{norton}:  
+
+\begin{equation}
+N = \frac{\omega_{motor}}{\omega_{salida}} = \frac{\tau_{salida}}{\tau_{motor}} \quad \text{(idealmente, sin pérdidas)}
+\end{equation}
+
+En la práctica existe una eficiencia mecánica $\eta<1$ por fricción en los engranajes, de modo que el torque de salida real es \cite{norton}:
+\begin{equation}
+\tau_{salida} = N \cdot \tau_{motor} \cdot \eta
+\end{equation}
+
+\subsection{Cinemática rueda--chasis}
+La velocidad lineal del vehículo se relaciona con la velocidad angular de la rueda de radio $r$ mediante la cinemática rotacional clásica \cite{norton}:
+
+\begin{equation}
+v = \omega \cdot r, \qquad \omega \, [\text{rad/s}] = \frac{2\pi \cdot N_{rpm}}{60}
+\end{equation}
+
+y la fuerza de tracción disponible en el contacto rueda--suelo se obtiene del torque de salida \cite{chapman}, \cite{norton}:
+
+\begin{equation}
+F = \frac{\tau_{salida}}{r}
+\end{equation}
+
+\subsection{Relación velocidad-torque (curva característica)}
+Un motor DC de imán permanente presenta una relación lineal entre el torque y la velocidad angular, entre los puntos extremos de rotor bloqueado ($\tau_{arranque}$, $\omega=0$) y de vacío ($\tau=0$, $\omega_{vacío}$), tal como describe la curva característica par-velocidad de las máquinas DC \cite{chapman}:
+
+\begin{equation}
+\tau(\omega) = \tau_{arranque} \cdot \left(1 - \frac{\omega}{\omega_{vacío}}\right)
+\end{equation}
+
+La potencia mecánica entregada es $P = \tau \cdot \omega$, la cual --bajo este modelo lineal-- alcanza su máximo teórico en $\omega = \omega_{vacío}/2$, es decir con $\tau = \tau_{arranque}/2$ \cite{chapman}.
+
+\subsection{Ley de Ohm, corriente de arranque y de régimen}
+La corriente que consume el motor está gobernada por la Ley de Ohm aplicada al circuito de armadura, considerando la fuerza contraelectromotriz (fcem) generada por la rotación \cite{dorf}, \cite{nilsson}:
+
+\begin{equation}
+I = \frac{V - \text{fcem}}{R_a}
+\end{equation}
+
+Al momento del arranque ($\omega=0$) la fcem es nula, por lo que la corriente es máxima (corriente de arranque o de rotor bloqueado). A medida que el motor acelera, la fcem crece y la corriente disminuye hasta un valor de régimen (corriente en vacío o en carga estable), sensiblemente menor que la de arranque, comportamiento típico de circuitos con elementos inductivo--resistivos bajo Ley de Ohm generalizada \cite{dorf} \cite{nilsson}. Esta diferencia es crítica para dimensionar el puente H, que debe soportar el pico de arranque sin entrar en protección térmica.
+ 
+\subsection{Puente H MOSFET}
+El puente H permite invertir la polaridad aplicada al motor mediante cuatro interruptores de potencia organizados en dos ramas. A diferencia de las topologías basadas en transistores bipolares (BJT) tradicionales, los controladores modernos como el TB6612FNG emplean transistores MOSFET \cite{tb6612fng}. Esta arquitectura presenta una resistencia de encendido ($R_{DS(on)}$) muy baja, típicamente de 0.5 $\Omega$, lo que minimiza la disipación de calor y reduce drásticamente la caída de tensión interna respecto al voltaje de alimentación \cite{tb6612fng}. Su dimensionamiento requiere que la corriente máxima de arranque de la carga no supere la corriente pico soportada por el dispositivo, garantizando una operación térmica estable.
+
+\section{Diseño y Metodología}
+ 
+\subsection{Chasis y tracción}
+Se emplea un chasis rígido de tracción a las cuatro ruedas (4WD) con cuatro motorreductores DC que accionan las ruedas de forma independiente, acoplados eléctricamente en paralelo por lado (dos derechos, dos izquierdos) para lograr un giro diferencial. La carrocería estética (Rayo McQueen) se monta de forma no estructural para no restringir el acceso al cableado.
+ 
+\subsection{Motores DC y caja reductora}
+Se seleccionan motorreductores tipo ``TT'', habituales en kits educativos de robótica móvil, con caja reductora integrada de relación nominal 1:48 y tensión de operación 3--6 V. Estos valores corresponden a especificaciones típicas reportadas por múltiples fabricantes de este tipo de motorreductor y deben confirmarse contra la hoja de datos específica del lote adquirido.
+ 
+\subsection{Puente H y dimensionamiento}
+Dado que se manejan cuatro motores, se utilizan dos módulos TB6612FNG (un módulo para el flanco derecho y otro para el izquierdo). Según el fabricante, cada canal soporta 1.2 A continuos y hasta 3.2 A pico \cite{tb6612fng}. Al distribuir la carga en dos controladores, se garantiza que la corriente de arranque de los motores en paralelo no exceda los límites operativos ni active la protección térmica de los integrados.Esta capacidad de manejo de corriente eficiente es posible gracias a la arquitectura interna basada en MOSFETs de baja resistencia, ilustrada en el diagrama de bloques del controlador (ver Figura \ref{fig:tb6612fng}) \cite{tb6612fng}."
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\linewidth]{Block Diagram.png}
+    \caption{Diagrama de bloques interno del controlador TB6612FNG.}
+    \label{fig:tb6612fng}
+\end{figure}
+
+\subsection{Arquitectura de alimentación independiente}
+Se diseñó una arquitectura de potencia aislada a partir de una única batería de polímero de litio (LiPo) de alto rendimiento, marca CNHL (grado dron), de 3 celdas (3S), con una tensión nominal de 11.1 V y una capacidad de 2200 mAh. La elección de una batería orientada a vehículos aéreos no tripulados garantiza una alta tasa de descarga continua, capaz de suministrar los picos de corriente demandados por los cuatro motorreductores durante el arranque sin sufrir caídas abruptas de tensión. A partir de esta fuente primaria, el sistema se ramifica compartiendo una tierra común:
+
+\begin{itemize}
+\item \textbf{Potencia de motores:} El voltaje de 11.1 V de la batería CNHL ingresa a un módulo regulador DC-DC buck LM2596 \cite{lm2596}, el cual reduce eficientemente la tensión a un nivel seguro (ej. 6 V) para la entrada de potencia ($VM$) de los módulos TB6612FNG y, en consecuencia, de los motores.El circuito reductor implementado sigue la topología de referencia del fabricante para garantizar una salida estable ante fluctuaciones de carga, tal como se detalla en la Figura \ref{fig:lm2596} \cite{lm2596}.".
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\linewidth]{Typical Application.png}
+    \caption{Circuito típico de aplicación del regulador Buck LM2596.}
+    \label{fig:lm2596}
+\end{figure}
+
+
+\item \textbf{Lógica/control:} En paralelo, la alimentación principal ingresa a un módulo regulador de protoboard dual que entrega 3.3 V estables para alimentar el microcontrolador ESP32 \cite{esp32} y los pines de referencia lógica ($VCC$) de los puentes H.
+\end{itemize}
+Esta separación por conmutación, sumada a la rigidez dieléctrica y alta capacidad de respuesta de la batería LiPo, evita que los transitorios mecánicos de los motores provoquen reinicios (brownouts) en la lógica del microcontrolador.
+ 
+\subsection{Cableado}
+El cableado de potencia se dimensiona en calibre suficiente para la corriente de arranque estimada y se mantiene físicamente separado del cableado de señal (ESP32 a TB6612FNG) para reducir el acoplamiento de ruido eléctrico durante la conmutación de los motores.
+ 
+\subsection{Firmware (rutina mínima avance--giro--detención)}
+
+El firmware es implementado en C/C++ para el microcontrolador ESP32 \cite{esp32}. Tiene una secuencia de arranque, donde los 4 motores se activan suavemente para probar que el PWM este funcionando correctamente y la direccion de rotacion sea la correcta. Después de esto se ejecuta la secuencia principal, donde hay varias tareas previamente implementadas:
+\begin{itemize}
+\item Movimiento lento hacia adelante y atrás.
+\item Movimiento rápido hacia adelante y atrás.
+\item Giro sobre el propio eje del vehiculo, en ambos sentidos.
+\item Patron de estrella (movimiento en curva hacia el frente y hacia atrás). 
+
+\end{itemize}
+Para la compilación, gestión de dependencias y despliegue del código en el microcontrolador se empleó el ecosistema PlatformIO integrado en Visual Studio Code (VSCode) \cite{platformio}. Esta herramienta ofrece soporte nativo para el ESP32, permitiendo un control estricto de las librerías del framework y la automatización del proceso de carga mediante interfaz serial, garantizando un entorno de desarrollo reproducible y profesional frente a los entornos de desarrollo tradicionales de Arduino.
+\\
+
+Los pines de control se asignan a puertos GPIO digitales aptos para  modulación por ancho de pulso (PWM). La selección de estos puertos se realizó respetando la distribución de periféricos del microcontrolador, como se muestra en el esquema de pines de la Figura \ref{fig:esp32} \cite{esp32}:
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\linewidth]{ESP32-Board-Pinout.png}
+    \caption{Distribución de pines (Pinout) del microcontrolador ESP32 destacando puertos GPIO/PWM.}
+    \label{fig:esp32}
+\end{figure}
+
+\\
+
+La seleccion de estos puertos se hizo tomando los pines mas cercanos a los modulos puente H:
+
+\begin{verbatim}
+struct Motor {
+    int pin_pwm;
+    int pin_dir_a;
+    int pin_dir_b;
+};
+
+Motor motors[] = {
+    { 23, 21, 22 },
+    { 4,  18, 19 },
+    { 14, 26, 27 },
+    { 32, 25, 33 },
+};
+\end{verbatim}
+
+\\
+
+La rutina ciclica del robot (loop) ejecuta una lista de tareas establecidas, donde cada una tiene una duracion, velocidad base, y velocidades para pares diferenciales (izquierda/derecha, frente/atras):
+
+\begin{verbatim}
+struct Task {
+    int time_ms;
+    int input_all;
+    int input_front_rear; // added to front 
+    wheels, subtracted from rear wheels
+    int input_left_right; // added to left 
+    wheels, subtracted from right wheels
+};
+
+Task tasks[] = {
+    // slow fwd
+    { 1000, 128, 0, 0},
+    // slow back
+    { 1000, -128, 0, 0},
+...
+    // turn in place left
+    { 1000, 0, 0, 256 },
+    // turn in place right
+    { 1000, 0, 0, -256 },
+...
+}
+\end{verbatim}
+\textbf{El codigo completo se puede encontrar en el repositorio:} https://github.com/botero-dev/usbbog-realidad-mixta
+
+\section{Resultados}
+
+El diseño electromecánico detallado en la sección anterior se materializó en un prototipo funcional, cuya integración física se presenta en la Figura \ref{fig:ensamble_fisico}. En esta vista superior se evidencia la distribución del cableado de potencia y señal, la ubicación central del microcontrolador ESP32 y la disposición simétrica de los controladores de motor para la tracción 4WD.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\linewidth]{ensamble_fisico.jpeg}
+    \caption{Vista superior del ensamblaje electromecánico final del vehículo RC, mostrando la integración del chasis, motores, puentes H, regulador de voltaje y microcontrolador.}
+    \label{fig:ensamble_fisico}
+\end{figure}
+
+
+
+\subsection{Análisis de Torque y Tracción}
+La masa total medida del vehículo ensamblado (incluyendo chasis, motores, puente H, ESP32 y batería LiPo) es de $m = 0.63$ kg. Considerando el radio medido de las ruedas $r = 0.03375$ m (equivalente a un diámetro de $67.5$ mm) y un coeficiente de fricción estimado $\mu = 0.6$ para rodadura en superficie plana, la fuerza de tracción mínima requerida es:
+
+$$F_{min} = m \cdot g \cdot \mu = 0.63 \cdot 9.81 \cdot 0.6 = 3.70 \text{ N}$$
+
+El torque total necesario en el eje de las ruedas es $\tau_{req} = F_{min} \cdot r = 3.70 \text{ N} \cdot 0.03375 \text{ m} = 0.125 \text{ N}\cdot\text{m}$. Dado que el sistema 4WD distribuye la carga, cada uno de los cuatro motores TT proporciona un torque combinado de salida superior al requerido, garantizando el desplazamiento del vehículo.
+
+\subsection{Análisis Eléctrico y Dimensionamiento}
+Según las especificaciones técnicas, el motor TT estándar a 6 V presenta una corriente de arranque de aproximadamente $1.0 \text{ A}$ por unidad. Al estar acoplados en paralelo por lado, cada puente H TB6612FNG experimenta un pico de corriente de $2.0 \text{ A}$ en el arranque. Dado que el controlador TB6612FNG soporta hasta $3.2 \text{ A}$ pico por canal \cite{tb6612fng}, el sistema está correctamente dimensionado y opera dentro de un margen seguro frente a su límite térmico, validando la arquitectura de alimentación propuesta.
+\\
+
+En un momento dañamos el regulador de voltaje al conectarle el voltaje de entrada con la polaridad invertida. Por esto tuvimos que buscar opciones para poder alimentar el carro robot. Una de las opciones fue usar un juego de 4 pilas AA en serie. En principio, esto parecía que iba a funcionar, ya que las ruedas giraban bien mientras programabamos el microcontrolador, y teníamos el carro en un pedestal en la mesa de trabajo. Pero en cuanto pusimos el carro sobre sus ruedas, el consumo de corriente de los motores reducía tanto el voltaje debido al peso de sus componentes, y así mismo interfiere la fricción entre la superficie y el material de la llanta del vehículo, provocando que se reiniciara el microcontrolador. Afortunadamente encontramos un par de baterías 18650, y de esta manera logramos alimentar el carro con un voltaje adecuado para los motores, alrededor de 7.4V. Con este par de baterias hicimos la prueba final de funcionamiento que se ve en el video.
+
+
+\textbf{Video del vehículo en funcionamiento mostrando la ejecución completa de la rutina automática:} https://youtu.be/Z-YuQ6jdH08
+
+
+
+% references section
+
+% can use a bibliography generated by BibTeX as a .bbl file
+% BibTeX documentation can be easily obtained at:
+% http://mirror.ctan.org/biblio/bibtex/contrib/doc/
+% The IEEEtran BibTeX style support page is at:
+% http://www.michaelshell.org/tex/ieeetran/bibtex/
+%\bibliographystyle{IEEEtran}
+% argument is your BibTeX string definitions and bibliography database(s)
+%\bibliography{IEEEabrv,../bib/paper}
+%
+% <OR> manually copy in the resultant .bbl file
+% set second argument of \begin to the number of references
+% (used to reserve space for the reference number labels box)
+\begin{thebibliography}{00}
+
+\bibitem{chapman} S. J. Chapman, \emph{Electric Machinery Fundamentals}, 5th ed. New York, NY, USA: McGraw-Hill, 2012.
+
+\bibitem{dorf} R. C. Dorf and J. A. Svoboda, \emph{Introduction to Electric Circuits}, 9th ed. Hoboken, NJ, USA: Wiley, 2013.
+
+\bibitem{tb6612fng} Toshiba Corporation, ``TB6612FNG: Driver IC for Dual DC motor,'' Datasheet, Oct. 2014. [Online]. Available: https://toshiba.semicon-storage.com/
+
+\bibitem{esp32} Espressif Systems, ``ESP32 Series Datasheet,'' v5.0, 2023. [Online]. Available: https://www.espressif.com/
+
+\bibitem{norton} R. L. Norton, \emph{Design of Machinery}, 5th ed. New York, NY, USA: McGraw-Hill, 2012.
+
+\bibitem{nilsson} J. W. Nilsson and S. A. Riedel, \emph{Electric Circuits}, 10th ed. Boston, MA, USA: Pearson, 2015.
+
+\bibitem{lm2596} Texas Instruments, ``LM2596 SIMPLE SWITCHER Power Converter 150-kHz 3-A Step-Down Voltage Regulator,'' Datasheet, Rev. G, 2020. [Online]. Available: https://www.ti.com/product/LM2596
+
+\bibitem{platformio} PlatformIO Labs, ``PlatformIO: Your permanent home for open source software debuggers and toolchains,'' Online Documentation, 2026. [Online]. Available: https://platformio.org/
+
+\end{thebibliography}
+
+% that's all folks
 \end{document}
+
+
