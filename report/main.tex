@@ -2,6 +2,7 @@
 \hyphenation{op-tical net-works semi-conduc-tor}
 \usepackage[spanish]{babel}
 \usepackage{graphicx}
+\usepackage{amsmath}
 \usepackage{hyperref}
 \usepackage{float}
 
@@ -85,13 +86,13 @@ F = \frac{\tau_{salida}}{r}
 \end{equation}
 
 \subsection{Relación velocidad-torque (curva característica)}
-Un motor DC de imán permanente presenta una relación lineal entre el torque y la velocidad angular, entre los puntos extremos de rotor bloqueado ($\tau_{arranque}$, $\omega=0$) y de vacío ($\tau=0$, $\omega_{vacío}$), tal como describe la curva característica par-velocidad de las máquinas DC \cite{chapman}:
+Un motor DC de imán permanente presenta una relación lineal entre el torque y la velocidad angular, entre los puntos extremos de rotor bloqueado ($\tau_{arranque}$, $\omega=0$) y de vacío ($\tau=0$, $\omega_{\text{vacío}}$), tal como describe la curva característica par-velocidad de las máquinas DC \cite{chapman}:
 
 \begin{equation}
-\tau(\omega) = \tau_{arranque} \cdot \left(1 - \frac{\omega}{\omega_{vacío}}\right)
+\tau(\omega) = \tau_{arranque} \cdot \left(1 - \frac{\omega}{\omega_{\text{vacío}}}\right)
 \end{equation}
 
-La potencia mecánica entregada es $P = \tau \cdot \omega$, la cual --bajo este modelo lineal-- alcanza su máximo teórico en $\omega = \omega_{vacío}/2$, es decir con $\tau = \tau_{arranque}/2$ \cite{chapman}.
+La potencia mecánica entregada es $P = \tau \cdot \omega$, la cual --bajo este modelo lineal-- alcanza su máximo teórico en $\omega = \omega_{\text{vacío}}/2$, es decir con $\tau = \tau_{arranque}/2$ \cite{chapman}.
 
 \subsection{Ley de Ohm, corriente de arranque y de régimen}
 La corriente que consume el motor está gobernada por la Ley de Ohm aplicada al circuito de armadura, considerando la fuerza contraelectromotriz (fcem) generada por la rotación \cite{dorf}, \cite{nilsson}:
@@ -104,6 +105,60 @@ Al momento del arranque ($\omega=0$) la fcem es nula, por lo que la corriente es
  
 \subsection{Puente H MOSFET}
 El puente H permite invertir la polaridad aplicada al motor mediante cuatro interruptores de potencia organizados en dos ramas. A diferencia de las topologías basadas en transistores bipolares (BJT) tradicionales, los controladores modernos como el TB6612FNG emplean transistores MOSFET \cite{tb6612fng}. Esta arquitectura presenta una resistencia de encendido ($R_{DS(on)}$) muy baja, típicamente de 0.5 $\Omega$, lo que minimiza la disipación de calor y reduce drásticamente la caída de tensión interna respecto al voltaje de alimentación \cite{tb6612fng}. Su dimensionamiento requiere que la corriente máxima de arranque de la carga no supere la corriente pico soportada por el dispositivo, garantizando una operación térmica estable.
+
+\subsection{Redes inalámbricas de área local: Wi-Fi (IEEE 802.11)}
+
+Wi-Fi es el nombre comercial de la familia de estándares IEEE 802.11 para redes de área local inalámbrica \cite{ieee80211}. Define cómo se comunican los dispositivos por radio en bandas de uso libre, principalmente la de 2.4 GHz, que es la que emplean los módulos de este proyecto. Una red se identifica con un nombre (SSID), y cualquier equipo que lo conozca y disponga de la contraseña puede unirse a ella.
+
+Existen dos formas de organizar la red:
+
+\begin{itemize}
+\item \textbf{Modo infraestructura:} el dispositivo se conecta a un punto de acceso ya existente, como el \emph{router} de una casa.
+\item \textbf{Modo punto de acceso (AP o \emph{SoftAP}):} el propio dispositivo crea la red y actúa como punto de acceso. El vehículo queda así como el \emph{router} de su propia red y entrega automáticamente una dirección a cada equipo que se conecta, de modo que un teléfono o un computador se enlazan directamente con él sin depender de infraestructura externa.
+\end{itemize}
+
+Se eligió el modo punto de acceso porque un vehículo de pruebas en campo no dispone de un \emph{router}, y porque toda la comunicación es local entre el cliente y la placa: el vehículo no se conecta a Internet ni lo necesita. La red se protege con una contraseña (WPA2) y el acceso se controla desde la propia placa.
+
+\subsection{Modelo TCP/IP}
+
+Las redes de datos se organizan por capas, y TCP/IP es el conjunto de protocolos que hace posible la comunicación en Internet y en prácticamente cualquier red local actual. La capa de red, \textbf{IP} (\emph{Internet Protocol}), se encarga del direccionamiento: cada dispositivo tiene una dirección IP, y IP se ocupa de que la información llegue al destino correcto. Por encima de IP existen dos formas de transportar los datos, con compromisos opuestos:
+
+\begin{itemize}
+\item \textbf{TCP} (\emph{Transmission Control Protocol}) garantiza la fiabilidad: establece una conexión entre los dos extremos y asegura que los datos lleguen completos y en el orden correcto, reenviando lo que se pierda.
+\item \textbf{UDP} (\emph{User Datagram Protocol}) es más simple: no establece conexión ni confirma la entrega, de modo que cada mensaje viaja por separado y puede perderse o llegar desordenado \cite{rfc768}.
+\end{itemize}
+
+Para la transmisión en tiempo real, UDP ofrece ventajas claras. Al no esperar confirmaciones ni reenviar lo perdido, mantiene una latencia baja y constante, mientras que TCP puede retrasar todo lo que viene detrás de un paquete perdido hasta que se recupera (el llamado bloqueo de cabeza de cola). En video o telemetría en vivo esto importa mucho: un fotograma que llega tarde ya no sirve, así que suele ser preferible descartarlo y seguir con el siguiente en vez de detener la transmisión para recuperarlo.
+
+En este proyecto, sin embargo, se optó por TCP por conveniencia: HTTP ---el protocolo de aplicación empleado--- se apoya en TCP, lo que permite usar un servidor web estándar y un cliente tan simple como un navegador, a cambio de una latencia algo mayor. UDP queda entonces como una mejora natural si más adelante se requiere reducir la latencia del video o de la telemetría en tiempo real. Como opción a futuro, \textbf{WebRTC} (\emph{Web Real-Time Communication}) es el estándar pensado precisamente para ese escenario: transmite audio y video en tiempo real sobre UDP, con sus propios mecanismos de cifrado y control de congestión, y está soportado de forma nativa por los navegadores \cite{rfc8825}. Adoptarlo permitiría reducir notablemente la latencia del video respecto a MJPEG sobre HTTP, a costa de una mayor complejidad en el servidor embebido.
+
+Sobre esta base se ejecutan los protocolos de aplicación; en este proyecto, HTTP. Así, cuando un cliente solicita una página o envía un comando, la pila TCP/IP de la placa se encarga del transporte y el protocolo de aplicación solo interpreta el contenido, sin que el usuario deba preocuparse por direcciones ni por datos perdidos.
+
+\subsection{Protocolo de aplicación HTTP y estilo REST}
+
+HTTP (\emph{Hypertext Transfer Protocol}) es un protocolo de tipo petición--respuesta que corre sobre TCP \cite{rfc9110}. Es \textbf{sin estado}: cada petición es independiente, de modo que el cliente incluye en ella todo lo necesario. Una petición indica qué se quiere hacer (el método) y sobre qué recurso (una dirección o URI), y el servidor responde con un resultado y su contenido.
+
+Los métodos habituales son \texttt{GET}, para consultar o recuperar algo sin modificar el estado, y \texttt{POST}, para ejecutar una acción o enviar datos. Esta distinción es una regla de diseño, no un formalismo: las operaciones con efecto real ---reproducir un sonido, mover los motores--- se exponen con \texttt{POST}, de modo que ninguna caché intermedia pueda reejecutarlas por accidente. La respuesta incluye además un código que resume el resultado (éxito, error del cliente o error del servidor) y un tipo de contenido que describe el cuerpo: HTML para la página de control, JSON para la telemetría o JPEG para una fotografía de la cámara.
+
+El estilo arquitectónico REST (\emph{Representational State Transfer}) organiza la aplicación como un conjunto de recursos identificados por su URI y manipulados con los métodos estándar del protocolo \cite{fielding}. La placa expone así recursos como \texttt{/status}, \texttt{/play}, \texttt{/control}, \texttt{/drive} y \texttt{/stop}, que el cliente consume mediante peticiones HTTP.
+
+Por último, la transmisión de video en vivo se sirve como \emph{MJPEG}: HTTP mantiene abierta una única respuesta por la que van llegando sucesivamente los fotogramas \cite{rfc2046}. Como esa respuesta permanece activa mientras alguien observa el video, se atiende en su propio puerto para no bloquear el resto de la aplicación.
+
+\subsection{Buses de comunicación serie: UART, I\textsuperscript{2}C e I\textsuperscript{2}S}
+
+Los periféricos del vehículo no se conectan por red, sino mediante buses serie cableados, cada uno con un compromiso distinto entre número de hilos y velocidad:
+
+\begin{itemize}
+\item \textbf{UART} (\emph{Universal Asynchronous Receiver--Transmitter}) es un enlace punto a punto en el que ambos extremos acuerdan de antemano la velocidad de transmisión, sin compartir una señal de reloj. Se emplea en el enlace entre el cerebro y el cuerpo.
+\item \textbf{I\textsuperscript{2}C} (\emph{Inter-Integrated Circuit}) es un bus de dos hilos que permite conectar varios dispositivos compartiendo las mismas líneas; cada uno responde a una dirección propia \cite{i2c}. Se usa para el sensor de inercia, y en este proyecto se comprobó que solo resulta fiable a la velocidad estándar de 100 kHz.
+\item \textbf{I\textsuperscript{2}S} (\emph{Inter-IC Sound}) es un bus de audio de tres hilos ---reloj, sincronía y datos--- que transmite las muestras de sonido hacia el convertidor digital-analógico \cite{i2s}. La velocidad del reloj queda fijada por la frecuencia de muestreo, el número de canales y la profundidad en bits:
+\end{itemize}
+
+\begin{equation}
+f_{BCK} = f_s \cdot N_{canales} \cdot N_{bits}
+\end{equation}
+
+\noindent por ejemplo, a $f_s = 44.1$ kHz en estéreo de 16 bits resulta $f_{BCK} = 44\,100 \cdot 2 \cdot 16 = 1.4112$ MHz.
 
 \section{Diseño y Metodología}
  
@@ -143,8 +198,78 @@ Esta separación por conmutación, sumada a la rigidez dieléctrica y alta capac
  
 \subsection{Cableado}
 El cableado de potencia se dimensiona en calibre suficiente para la corriente de arranque estimada y se mantiene físicamente separado del cableado de señal (ESP32 a TB6612FNG) para reducir el acoplamiento de ruido eléctrico durante la conmutación de los motores.
- 
+
+\subsection{Arquitectura de control distribuida: placas utilizadas y su función}
+
+El Entregable 1 describía un único microcontrolador ESP32 clásico que generaba directamente las señales PWM y de dirección de los dos puentes H. Al incorporar la cámara, el audio, la unidad de medición inercial y la tira de LEDs, nos quedamos cortos de pines. Las cuentas lo dejan claro: la cámara ocupa de forma fija 14 GPIO; el audio (I\textsuperscript{2}S) necesita 3 (reloj de bit, sincronía de trama y datos); el sensor de inercia (I\textsuperscript{2}C) necesita 2 (SDA y SCL); y la tira de LEDs, 1. Eso suma 20 pines para los periféricos. Del lado de los motores, controlar los cuatro motorreductores con dos puentes dobles exige 12 líneas ---un PWM y dos de dirección por cada uno de los cuatro canales--- más 1 línea de \emph{standby} compartida, es decir 13 pines adicionales. En total son 33 pines, muy por encima de los GPIO que quedan libres en el ESP32-S3 una vez descontados los de la cámara, la memoria flash y la PSRAM. Por esta razón la arquitectura se dividió en dos microcontroladores con responsabilidades disjuntas:
+
+\begin{itemize}
+\item Un \textbf{cerebro} (ESP32-S3-CAM) que \emph{decide}: red Wi-Fi, captura y transmisión de cámara, reproducción de audio, lectura del IMU y el lazo de control completo (mezcla, rampas y frenado).
+\item Un \textbf{cuerpo} (RP2040, Raspberry Pi Pico) que \emph{no decide nada}: recibe cuatro consignas de ciclo de trabajo por un enlace serie y las traduce en PWM y líneas de dirección, aportando además la seguridad de un \emph{dead-man} (vigilante de comunicación) implementado por firmware.
+\end{itemize}
+
+La placa Heltec se emplea como banco de pruebas de red e interfaz (proyecto \texttt{network-test}): un segundo ESP32-S3 con pantalla OLED que levanta su propio SoftAP y expone una API REST. Esto permitió validar el acceso Wi-Fi, el modelo HTTP y la visualización de datos antes de integrarlos en el cerebro. La Tabla~\ref{tab:placas} resume las placas y el uso dado a cada una.
+
+\begin{table}[H]
+\centering
+\caption{Placas utilizadas y su función dentro del sistema.}
+\label{tab:placas}
+\small
+\begin{tabular}{|p{2.1cm}|p{1.5cm}|p{4.3cm}|}
+\hline
+\textbf{Placa} & \textbf{MCU} & \textbf{Función en el proyecto} \\
+\hline
+ESP32-S3-CAM (WROOM-1 N16R8) & ESP32-S3 & Cerebro: Wi-Fi (SoftAP), cámara, audio, IMU y lazo de control; enlace UART con el cuerpo. \\
+\hline
+Raspberry Pi Pico & RP2040 & Cuerpo: 4 PWM a 20 kHz + 8 líneas de dirección + \emph{STBY} para los dos ROB-14450; \emph{dead-man} de 100 ms. \\
+\hline
+Heltec WiFi LoRa 32 (V3) & ESP32-S3 & Banco de pruebas de red: SoftAP con API REST y pantalla OLED SSD1306 (\texttt{network-test}). \\
+\hline
+ESP32 clásico (\texttt{esp32dev}) & ESP32 & Prototipo del Entregable 1; retirado del vehículo. Su lógica de mezcla se portó al cerebro. \\
+\hline
+\end{tabular}
+\end{table}
+
+El cerebro es un ESP32-S3 de dos núcleos con 16 MB de memoria flash y 8 MB de PSRAM, montado sobre una placa portadora de 40 pines (Freenove ESP32-S3-WROOM) a la que se conecta la cámara por un conector FPC. La PSRAM es indispensable para almacenar los búferes de trama de la cámara, y los dos núcleos permiten separar las tareas de red y de audio de las del lazo de control. El cuerpo es un RP2040 (dos núcleos Cortex-M0+ a 133 MHz) elegido porque, a diferencia de un expansor I\textsuperscript{2}C como el PCA9685, ofrece PWM por hardware a cualquier frecuencia y no consume pines del cerebro más allá de los dos del enlace serie. El detalle de los buses, direcciones de memoria y asignación de pines se documenta en \texttt{docs/circuit-plan.md} y en el esquema eléctrico del repositorio.
+
+\subsection{Dispositivos de entrada y salida}
+
+Además de los puentes H y los motores, el vehículo integra cuatro dispositivos que amplían su percepción y su capacidad de interacción. La Tabla~\ref{tab:io} los resume y las subsecciones siguientes detallan cada uno.
+
+\begin{table}[H]
+\centering
+\caption{Dispositivos de entrada y salida del vehículo.}
+\label{tab:io}
+\small
+\begin{tabular}{|p{2.0cm}|p{1.9cm}|p{4.0cm}|}
+\hline
+\textbf{Dispositivo} & \textbf{Modelo} & \textbf{Interfaz y uso} \\
+\hline
+Cámara (entrada) & OV3660 & Bus DVP de 8 bits + SCCB; JPEG en PSRAM; transmisión MJPEG y captura. \\
+\hline
+IMU (entrada) & BMI160 (6 ejes) & I\textsuperscript{2}C a 100 kHz; orientación, inclinación y detección de golpes. \\
+\hline
+Audio (salida) & PCM5102A + amplificador clase D & I\textsuperscript{2}S (BCK/LRCK/DIN) hacia el DAC y el parlante. \\
+\hline
+Luces (salida) & Tira WS2812 y LED RGB integrado & RMT sobre GPIO48; indicación de estado y alumbrado. \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsubsection{Cámara (entrada)}
+El sensor de imagen es un \textbf{OV3660} \cite{ov3660}, conectado por el bus paralelo DVP de 8 bits propietario de la placa, y configurado a través del bus SCCB (un bus de control compatible con I\textsuperscript{2}C). El sensor entrega directamente fotogramas comprimidos en JPEG, que el controlador de cámara del ESP32-S3 deposita en búferes ubicados en la PSRAM. El sensor viene montado girado sobre la placa portadora, por lo que el firmware aplica una inversión vertical (\emph{vflip}) al inicializarlo con el fin de corregir la orientación de la imagen. El resultado se ofrece de dos maneras: como transmisión de video en vivo (\texttt{/stream}, MJPEG) y como fotografía única (\texttt{/capture}). Su función es proporcionar retroalimentación visual al operador y servir de base para desarrollos futuros de visión.
+
+\subsubsection{Audio (salida)}
+La cadena de audio emplea un convertidor digital-analógico estéreo \textbf{PCM5102A} \cite{pcm5102a} que recibe las muestras por el bus I\textsuperscript{2}S y entrega una señal de nivel de línea (aproximadamente 2.1~Vrms). Como esa señal no puede excitar directamente un parlante, se intercala un \textbf{amplificador clase D} \cite{pam8302a} y, a su salida, el parlante. Los búferes de audio se mantienen en la RAM interna del microcontrolador para no competir con los accesos de la cámara a la PSRAM, y la reproducción se ejecuta en una tarea independiente de modo que no bloquee la atención del servidor web. La reproducción es bajo demanda: el vehículo no emite sonido al arrancar. Su función es reproducir efectos sonoros y avisos.
+
+\subsubsection{Luces (salida)}
+La iluminación utiliza una tira de LEDs direccionables \textbf{WS2812} de 5 V \cite{ws2812}, en paralelo con el LED RGB integrado en la placa portadora: ambos comparten la misma red de datos en el GPIO48. El protocolo de estas tiras es serie, de un solo hilo y con temporización muy estricta, por lo que la señal se genera con el periférico \textbf{RMT} del ESP32-S3 y nunca con PWM, que corrompería los tiempos de bit. La línea incluye una resistencia serie de 330~$\Omega$ y un adaptador de nivel (\textbf{74AHCT125}), necesario porque la tensión de umbral de entrada del LED es $0.7 \times V_{DD} = 3.5$ V a 5 V, superior a los 3.3 V lógicos del microcontrolador. Su función principal es la indicación de estado (reposo, transmisión de video en curso, reproducción de audio) y, secundariamente, el alumbrado.
+
+\subsubsection{Unidad de medición inercial (entrada)}
+La unidad de medición inercial (IMU) es un \textbf{BMI160} de 6 ejes ---acelerómetro y giroscopio--- \cite{bmi160}, comunicado por el bus I\textsuperscript{2}C en la dirección \texttt{0x69} (fijada por la propia placa mediante la polarización del pin SA0). Se muestrea a 200 Hz para orientación e inclinación, con rangos de $\pm 8$~g y $\pm 2000$~dps, y se monta rígidamente sobre el chasis con un amortiguamiento blando para aislarlo de la vibración de los motores. Al tratarse de un sensor de 6 ejes, no incluye magnetómetro y por tanto no proporciona orientación absoluta: el ángulo de guiñada (\emph{yaw}) se obtiene por integración de la velocidad angular y deriva lentamente con el tiempo. Su función es aportar orientación e inclinación y detectar impactos o cambios bruscos de movimiento.
+
 \subsection{Firmware (rutina mínima avance--giro--detención)}
+
 
 El firmware es implementado en C/C++ para el microcontrolador ESP32 \cite{esp32}. Tiene una secuencia de arranque, donde los 4 motores se activan suavemente para probar que el PWM este funcionando correctamente y la direccion de rotacion sea la correcta. Después de esto se ejecuta la secuencia principal, donde hay varias tareas previamente implementadas:
 \begin{itemize}
@@ -155,7 +280,6 @@ El firmware es implementado en C/C++ para el microcontrolador ESP32 \cite{esp32}
 
 \end{itemize}
 Para la compilación, gestión de dependencias y despliegue del código en el microcontrolador se empleó el ecosistema PlatformIO integrado en Visual Studio Code (VSCode) \cite{platformio}. Esta herramienta ofrece soporte nativo para el ESP32, permitiendo un control estricto de las librerías del framework y la automatización del proceso de carga mediante interfaz serial, garantizando un entorno de desarrollo reproducible y profesional frente a los entornos de desarrollo tradicionales de Arduino.
-\\
 
 Los pines de control se asignan a puertos GPIO digitales aptos para  modulación por ancho de pulso (PWM). La selección de estos puertos se realizó respetando la distribución de periféricos del microcontrolador, como se muestra en el esquema de pines de la Figura \ref{fig:esp32} \cite{esp32}:
 
@@ -165,8 +289,6 @@ Los pines de control se asignan a puertos GPIO digitales aptos para  modulación
     \caption{Distribución de pines (Pinout) del microcontrolador ESP32 destacando puertos GPIO/PWM.}
     \label{fig:esp32}
 \end{figure}
-
-\\
 
 La seleccion de estos puertos se hizo tomando los pines mas cercanos a los modulos puente H:
 
@@ -184,8 +306,6 @@ Motor motors[] = {
     { 32, 25, 33 },
 };
 \end{verbatim}
-
-\\
 
 La rutina ciclica del robot (loop) ejecuta una lista de tareas establecidas, donde cada una tiene una duracion, velocidad base, y velocidades para pares diferenciales (izquierda/derecha, frente/atras):
 
@@ -236,7 +356,6 @@ El torque total necesario en el eje de las ruedas es $\tau_{req} = F_{min} \cdot
 
 \subsection{Análisis Eléctrico y Dimensionamiento}
 Según las especificaciones técnicas, el motor TT estándar a 6 V presenta una corriente de arranque de aproximadamente $1.0 \text{ A}$ por unidad. Al estar acoplados en paralelo por lado, cada puente H TB6612FNG experimenta un pico de corriente de $2.0 \text{ A}$ en el arranque. Dado que el controlador TB6612FNG soporta hasta $3.2 \text{ A}$ pico por canal \cite{tb6612fng}, el sistema está correctamente dimensionado y opera dentro de un margen seguro frente a su límite térmico, validando la arquitectura de alimentación propuesta.
-\\
 
 En un momento dañamos el regulador de voltaje al conectarle el voltaje de entrada con la polaridad invertida. Por esto tuvimos que buscar opciones para poder alimentar el carro robot. Una de las opciones fue usar un juego de 4 pilas AA en serie. En principio, esto parecía que iba a funcionar, ya que las ruedas giraban bien mientras programabamos el microcontrolador, y teníamos el carro en un pedestal en la mesa de trabajo. Pero en cuanto pusimos el carro sobre sus ruedas, el consumo de corriente de los motores reducía tanto el voltaje debido al peso de sus componentes, y así mismo interfiere la fricción entre la superficie y el material de la llanta del vehículo, provocando que se reiniciara el microcontrolador. Afortunadamente encontramos un par de baterías 18650, y de esta manera logramos alimentar el carro con un voltaje adecuado para los motores, alrededor de 7.4V. Con este par de baterias hicimos la prueba final de funcionamiento que se ve en el video.
 
@@ -276,6 +395,38 @@ En un momento dañamos el regulador de voltaje al conectarle el voltaje de entra
 \bibitem{lm2596} Texas Instruments, ``LM2596 SIMPLE SWITCHER Power Converter 150-kHz 3-A Step-Down Voltage Regulator,'' Datasheet, Rev. G, 2020. [Online]. Available: https://www.ti.com/product/LM2596
 
 \bibitem{platformio} PlatformIO Labs, ``PlatformIO: Your permanent home for open source software debuggers and toolchains,'' Online Documentation, 2026. [Online]. Available: https://platformio.org/
+
+\bibitem{ieee80211} IEEE, ``IEEE Standard for Information Technology---Telecommunications and Information Exchange between Systems---Local and Metropolitan Area Networks---Specific Requirements---Part 11: Wireless LAN Medium Access Control (MAC) and Physical Layer (PHY) Specifications,'' IEEE Std 802.11-2020, 2021.
+
+\bibitem{rfc9110} R. Fielding, M. Nottingham, and J. Reschke, ``HTTP Semantics,'' RFC 9110, IETF, Jun. 2022. [Online]. Available: https://www.rfc-editor.org/rfc/rfc9110
+
+\bibitem{rfc2046} N. Freed and N. Borenstein, ``Multipurpose Internet Mail Extensions (MIME) Part Two: Media Types,'' RFC 2046, IETF, Nov. 1996. [Online]. Available: https://www.rfc-editor.org/rfc/rfc2046
+
+\bibitem{rfc768} J. Postel, ``User Datagram Protocol,'' RFC 768, IETF, Aug. 1980. [Online]. Available: https://www.rfc-editor.org/rfc/rfc768
+
+\bibitem{rfc8825} C. Jennings, H. Bostr{\"o}m, and J.-I. Bruaroey, ``WebRTC: Real-Time Communication in Browsers,'' RFC 8825, IETF, Jan. 2021. [Online]. Available: https://www.rfc-editor.org/rfc/rfc8825
+
+\bibitem{fielding} R. T. Fielding, ``Architectural Styles and the Design of Network-based Software Architectures,'' Ph.D. dissertation, Univ. of California, Irvine, Irvine, CA, USA, 2000.
+
+\bibitem{i2c} NXP Semiconductors, ``UM10204: I\textsuperscript{2}C-bus specification and user manual,'' Rev. 7.0, 2021. [Online]. Available: https://www.nxp.com/docs/en/user-guide/UM10204.pdf
+
+\bibitem{i2s} Philips Semiconductors, ``I\textsuperscript{2}S bus specification,'' Rev. Feb. 1986.
+
+\bibitem{esp32s3} Espressif Systems, ``ESP32-S3 Series Datasheet,'' Espressif Systems, 2024. [Online]. Available: https://www.espressif.com/
+
+\bibitem{rp2040} Raspberry Pi Ltd, ``RP2040 Datasheet: A microcontroller by Raspberry Pi,'' Raspberry Pi Ltd, 2024. [Online]. Available: https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf
+
+\bibitem{ov3660} OmniVision Technologies, ``OV3660 1/5-inch 3-megapixel CMOS image sensor,'' Datasheet. [Online]. Available: https://www.ovt.com/
+
+\bibitem{bmi160} Bosch Sensortec, ``BMI160: Small, low power inertial measurement unit,'' Datasheet, Rev. 1.0. [Online]. Available: https://www.bosch-sensortec.com/
+
+\bibitem{pcm5102a} Texas Instruments, ``PCM5102A: 2-V\textsubscript{RMS} Audio Stereo DAC with 32-bit, 384-kHz PCM Interface,'' Datasheet. [Online]. Available: https://www.ti.com/product/PCM5102A
+
+\bibitem{pam8302a} Diodes Incorporated, ``PAM8302A: 2.5 W Filterless Mono Class-D Audio Amplifier,'' Datasheet. [Online]. Available: https://www.diodes.com/
+
+\bibitem{ws2812} Worldsemi, ``WS2812B: Intelligent control LED integrated light source,'' Datasheet. [Online]. Available: https://www.worldsemi.com/
+
+\bibitem{heltec} Heltec Automation, ``WiFi LoRa 32 (V3) Datasheet,'' Heltec Automation, 2023. [Online]. Available: https://heltec.org/
 
 \end{thebibliography}
 
