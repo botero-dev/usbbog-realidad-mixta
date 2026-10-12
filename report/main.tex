@@ -238,6 +238,11 @@ Esta separación en dos rieles, sumada a la rigidez dieléctrica y a la alta cap
 \subsection{Cableado}
 El cableado de potencia se dimensiona en calibre suficiente para la corriente de arranque estimada y se mantiene físicamente separado del cableado de señal (del RP2040 a los TB6612FNG) para reducir el acoplamiento de ruido eléctrico durante la conmutación de los motores.
 
+\subsection{Herramienta de diseño del esquema eléctrico (KiCad)}
+El esquema eléctrico del vehículo se dibujó con \textbf{KiCad} \cite{kicad}, una suite libre y de código abierto para el diseño de electrónica. KiCad reúne en un mismo entorno la captura del esquema, las bibliotecas de símbolos y huellas, y el diseño de placas de circuito impreso. Se eligió por ser gratuito y multiplataforma, por guardar el proyecto en un formato abierto que se puede versionar junto con el firmware, y porque permite comprobar las conexiones de forma automática en lugar de revisarlas a mano.
+
+El flujo de trabajo fue el habitual de la herramienta. Primero se dibujó el esquema completo en una sola hoja A3: la alimentación, la etapa de potencia, las dos placas de control y sus periféricos. Después se ejecutó la comprobación de reglas eléctricas (ERC, \emph{Electrical Rules Check}), que revisa que no queden pines mal conectados ni conflictos entre señales; el esquema terminó con cero errores y cero advertencias. Por último se exportó el esquema a PDF ---incluido como apéndice de este informe--- y a una lista de conexiones (\emph{netlist}) que sirvió de guía para el cableado de la maqueta. El ERC comprueba la conectividad y el uso de los pines, mientras que el dimensionamiento eléctrico se validó de forma experimental sobre el prototipo armado.
+
 \subsection{Arquitectura de control distribuida: placas utilizadas y su función}
 
 El Entregable 1 describía un único microcontrolador ESP32 clásico que generaba directamente las señales PWM y de dirección de los dos puentes H. Al incorporar la cámara, el audio, la unidad de medición inercial y la tira de LEDs, nos quedamos cortos de pines. La cámara ocupa de forma fija 14 pines, el audio (I\textsuperscript{2}S) necesita 3 (reloj, sincronía y datos); el sensor de inercia (I\textsuperscript{2}C) necesita 2 (SDA y SCL); y la tira de LEDs, 1. Eso suma 20 pines para los periféricos. Del lado de los motores, controlar los cuatro motorreductores con dos puentes dobles exige 12 líneas ---un PWM y dos de dirección por cada uno de los cuatro canales--- más 1 línea de \emph{standby} compartida, es decir 13 pines adicionales. En total son 33 pines, muy por encima de los GPIO que quedan libres en el ESP32-S3 una vez descontados los de la cámara, la memoria flash y la PSRAM. Por esta razón la arquitectura se dividió en dos microcontroladores con responsabilidades separadas:
@@ -541,7 +546,7 @@ Con el riel de motores en 8.0 V, cada motor TT drena aproximadamente $1.0 \text{
 La alimentación definitiva se validó sobre el vehículo armado. Con la batería LiPo 3S y los dos reductores ajustados ---XL4015 a 8.0 V para los motores y LM2596 a 5.0 V para la lógica---, los cuatro motores conectados a los dos TB6612FNG giraron correctamente desde el pack real, sin reinicios del microcontrolador durante las pruebas. El reparto de la corriente en dos rieles, con la referencia de los motores y la de la lógica unidas en un solo punto de tierra, fue lo que evitó que los picos de los motores afectaran a la electrónica de control.
 
 
-\textbf{Video del vehículo en funcionamiento mostrando la ejecución completa de la rutina automática:} https://youtu.be/Z-YuQ6jdH08
+\textbf{Videos del vehículo en funcionamiento (lista de reproducción):} \url{https://www.youtube.com/playlist?list=PLXGvmgLpp-MQ}
 
 
 
@@ -617,7 +622,7 @@ El código fuente completo ---el firmware de las dos placas, el esquema eléctri
 
 El repositorio se organiza en cinco carpetas: \texttt{firmware/} reúne los proyectos de PlatformIO (\texttt{brain/} para el ESP32-S3, \texttt{pico\_body/} para el RP2040 y \texttt{network-test/} para las pruebas de red), \texttt{hardware/} contiene el esquema eléctrico generado y su lista de conexiones, \texttt{game-app/} la aplicación de Godot, \texttt{docs/} la documentación de diseño y \texttt{report/} este documento.
 
-La demostración del vehículo en funcionamiento está en \url{https://youtu.be/Z-YuQ6jdH08}.
+Las demostraciones del vehículo en funcionamiento están en la lista de reproducción \url{https://www.youtube.com/playlist?list=PLXGvmgLpp-MQ}.
 
 % references section
 
@@ -682,6 +687,8 @@ La demostración del vehículo en funcionamiento está en \url{https://youtu.be/
 \bibitem{pam8302a} Diodes Incorporated, ``PAM8302A: 2.5 W Filterless Mono Class-D Audio Amplifier,'' Datasheet. [Online]. Available: https://www.diodes.com/
 
 \bibitem{ws2812} Worldsemi, ``WS2812B: Intelligent control LED integrated light source,'' Datasheet. [Online]. Available: https://www.worldsemi.com/
+
+\bibitem{kicad} KiCad Development Team, ``KiCad E.D.A. Documentation,'' 2024. [Online]. Available: https://docs.kicad.org/
 
 \end{thebibliography}
 
