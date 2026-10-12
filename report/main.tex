@@ -1,25 +1,63 @@
 \documentclass[journal]{IEEEtran}
 \hyphenation{op-tical net-works semi-conduc-tor}
 \usepackage[spanish]{babel}
+\addto\captionsspanish{\renewcommand{\tablename}{Tabla}}
 \usepackage{graphicx}
 % \figsafe{archivo}{ancho}: inserta la imagen si el archivo existe; si no, muestra
-% un recuadro de "figura pendiente" en vez de abortar la compilacion.
+% un recuadro de "figura pendiente" en vez de abortar la compilación.
 \newcommand{\figsafe}[2]{%
   \IfFileExists{#1}{\includegraphics[width=#2]{#1}}%
   {\fbox{\parbox[c][2.5cm][c]{0.8\linewidth}{\centering\small Figura pendiente: \texttt{\detokenize{#1}}}}}%
 }
 \usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+
+% Listados de consola: capturas de la salida real de las placas.
+\usepackage{listings}
+\renewcommand{\lstlistingname}{Listado}
+\definecolor{codebg}{RGB}{245,246,248}
+\definecolor{coderule}{RGB}{200,206,212}
+\lstdefinestyle{consola}{
+    basicstyle=\ttfamily\scriptsize,
+    breaklines=true,
+    breakatwhitespace=true,
+    columns=fullflexible,
+    keepspaces=true,
+    showstringspaces=false,
+    backgroundcolor=\color{codebg},
+    frame=single,
+    rulecolor=\color{coderule},
+    framesep=5pt,
+    xleftmargin=6pt,
+    xrightmargin=4pt,
+    captionpos=b,
+    abovecaptionskip=4pt,
+    aboveskip=8pt,
+    belowskip=6pt,
+}
+
+% Tipografia: reduce cajas desbordadas (overfull/underfull hbox).
+\usepackage[final,protrusion=true,expansion=true]{microtype}
+\setlength{\emergencystretch}{2em}
+
 \usepackage{hyperref}
+\hypersetup{colorlinks=true, linkcolor=black, citecolor=black, urlcolor=blue}
 \usepackage{float}
+% Página completa con el esquema eléctrico (apéndice).
+\usepackage{pdfpages}
+\usepackage{tikz}
+\usetikzlibrary{babel,positioning,arrows.meta,calc}
 
 \begin{document}
-\title{DISEÑO Y ANÁLISIS DE UN VEHÍCULO RADIOCONTROL CON VISIÓN, AUDIO Y ORIENTACION}
+\title{DISEÑO Y ANÁLISIS DE UN VEHÍCULO RADIOCONTROL CON VISIÓN, AUDIO Y ORIENTACIÓN}
 \author{Andrés~Botero, Jade~Moreno, Sofía~Reina and~Vivi~Delgado}% <-this % stops a space
 
 
 % The paper headers
 \markboth{Universidad de San Buenaventura - Ingeniería Multimedia }%
-{Shell \MakeLowercase{\textit{Apellido, Nombre}}: Titulo del informe}
+{Shell \MakeLowercase{\textit{Apellido, Nombre}}: Título del informe}
 % The only time the second header will appear is for the odd numbered pages
 % after the title page when using the twoside option.
 
@@ -27,7 +65,13 @@
 \maketitle
 
 \begin{abstract}
-Se presenta el diseño y la implementación de un vehículo a control remoto inspirado en el personaje Rayo McQueen, construido sobre un chasis de tracción a las cuatro ruedas (4WD) con cuatro motorreductores DC y dos controladores de puente H TB6612FNG. El control se reparte entre dos microcontroladores: un ESP32-S3 que actúa como cerebro (red Wi-Fi, cámara, audio, sensor de movimiento y control del vehículo) y un RP2040 que actúa como cuerpo (generación de las señales PWM y de dirección, con un vigilante de comunicación). Se describe la alimentación de los diferentes modulos, el protocolo de comunicación entre ambos microcontroladores y una interfaz de usuario basada en HTTP. Además, se desarrolla el análisis cuantitativo de fuerza, torque, velocidad, relación de transmisión, Ley de Ohm y corriente de arranque, y se contrastan los cálculos teóricos con la validación experimental de cada subsistema del prototipo.
+Se presenta el diseño y la implementación de un vehículo a control remoto inspirado en el personaje Rayo McQueen, construido sobre un chasis de tracción a las cuatro ruedas (4WD) con cuatro motorreductores DC y dos controladores de puente H TB6612FNG. El control se reparte entre dos microcontroladores: un ESP32-S3 que actúa como cerebro (red Wi-Fi, cámara, audio, sensor de movimiento y control del vehículo) y un RP2040 que actúa como cuerpo (generación de las señales PWM y de dirección, con un vigilante de comunicación). Se describe la alimentación de los diferentes módulos, el protocolo de comunicación entre ambos microcontroladores y una interfaz de usuario basada en HTTP. Además, se desarrolla el análisis cuantitativo de fuerza, torque, velocidad, relación de transmisión, Ley de Ohm y corriente de arranque, y se contrastan los cálculos teóricos con la validación experimental de cada subsistema del prototipo.
+\end{abstract}
+
+% Traducción del resumen al inglés (abstract)
+\renewcommand{\abstractname}{Abstract}
+\begin{abstract}
+This work presents the design and implementation of a radio-controlled vehicle inspired by the character Lightning McQueen, built on a four-wheel-drive (4WD) chassis with four DC gearmotors and two TB6612FNG H-bridge drivers. Control is split between two microcontrollers: an ESP32-S3 acting as the brain (Wi-Fi network, camera, audio, motion sensor and vehicle control) and an RP2040 acting as the body (generation of the PWM and direction signals, with a communication watchdog). The document describes the power supply of the different modules, the communication protocol between both microcontrollers and an HTTP-based user interface. It also develops the quantitative analysis of force, torque, speed, gear ratio, Ohm's law and inrush current, and contrasts the theoretical calculations with the experimental validation of every subsystem of the prototype.
 \end{abstract}
 
 % Note that keywords are not normally used for peerreview papers.
@@ -39,19 +83,22 @@ Vehículo RC, ESP32-S3, RP2040, Wi-Fi, HTTP, Cámara, Unidad de medición inerci
 
 \section{Introducción}
 
-\IEEEPARstart{L}{os} vehículos a control remoto (RC) son una plataforma didáctica habitual para integrar conceptos de mecánica, electrónica de potencia y programación embebida en un solo sistema físico. Este informe documenta la etapa de diseño electromecánico y firmware base de un vehículo RC con carrocería inspirada en el personaje Rayo McQueen (Cars, Pixar), manteniendo el enfoque centrado en los aspectos de ingeniería del prototipo como lo es: selección del chasis y tracción integral a cuatro ruedas (4WD), dimensionamiento de motores y transistores de alta eficiencia, arquitectura de alimentación, cableado y una rutina de firmware mínima gestionada por un microcontrolador ESP32.
+\IEEEPARstart{L}{os} vehículos a control remoto (RC) son una plataforma didáctica habitual para integrar conceptos de mecánica, electrónica de potencia y programación embebida en un solo sistema físico. En este proyecto se llevó esa integración hasta un vehículo teleoperado con carrocería inspirada en el personaje Rayo McQueen (Cars, Pixar), sobre un chasis de tracción a las cuatro ruedas (4WD) y con visión por cámara, salida de audio y medición inercial. La inteligencia se reparte entre dos microcontroladores: un ESP32-S3 que decide (red Wi-Fi, cámara, audio, sensor de movimiento y control del vehículo) y un RP2040 que ejecuta, generando las señales PWM y de dirección de la etapa de potencia y vigilando la comunicación.
+
+Este informe recorre la selección del chasis y de los motores, el dimensionamiento de la etapa de potencia y de la alimentación, el cableado, el protocolo de comunicación entre ambas placas y la interfaz de usuario basada en HTTP. Además, desarrolla el análisis cuantitativo de las magnitudes mecánicas y eléctricas del prototipo y contrasta los cálculos teóricos con la validación experimental de cada subsistema.
 
 \section{Objetivos}
 
 \subsection{Objetivo general}
-Desarrollar un vehículo a control remoto que integre el control de los motores, la transmisión de video, el audio y la medición inercial, aplicando conceptos de mecánica, electrónica y programación embebida.
+Desarrollar un vehículo a control remoto que integre componentes electrónicos y multimedia ---control de motores, cámara, audio y sensor de movimiento--- y que se conecte con un motor de juegos para gobernarlo y visualizar su estado, aplicando conceptos de electrónica y programación embebida.
 
 \subsection{Objetivos específicos}
 \begin{itemize}
     \item Construir un prototipo funcional con tracción a las cuatro ruedas, gobernable desde una interfaz de red.
+    \item Integrar los sensores y los elementos multimedia del vehículo: cámara con video en vivo, salida de audio y sensor de movimiento de seis ejes.
     \item Implementar el firmware de los dos microcontroladores y la comunicación entre ellos, incluyendo una condición de seguridad ante la pérdida de comunicación.
-    \item Validar experimentalmente la alimentación, el control de los motores y los periféricos de entrada y salida (cámara, audio y sensor de movimiento).
-    \item Realizar el análisis cuantitativo completo de las magnitudes mecánicas y eléctricas involucradas.
+    \item Conectar el vehículo con un motor de juegos (Godot), usando su interfaz HTTP para controlarlo y visualizar sus datos.
+    \item Validar experimentalmente la alimentación, el control de los motores y los subsistemas de entrada y salida, y contrastar los resultados con el análisis cuantitativo de las magnitudes mecánicas y eléctricas.
 \end{itemize}
 
 \section{Marco Teórico}
@@ -68,7 +115,7 @@ donde $K_t$ es la constante del torque del motor(N·m/A), $I_a$ es la corriente 
 
 
 \subsection{Relación de transmisión}
-La relación de transmisión N (o"gear ratio") relaciona la velocidad agular del eje del motor con la del eje de salida, como lo afirma la teoría de trenes de engranajes \cite{norton}:  
+La relación de transmisión N (o ``gear ratio'') relaciona la velocidad angular del eje del motor con la del eje de salida, como lo afirma la teoría de trenes de engranajes \cite{norton}:  
 
 \begin{equation}
 N = \frac{\omega_{motor}}{\omega_{salida}} = \frac{\tau_{salida}}{\tau_{motor}} \quad \text{(idealmente, sin pérdidas)}
@@ -176,35 +223,20 @@ Se emplea un chasis rígido de tracción a las cuatro ruedas (4WD) con cuatro mo
 Se seleccionan motorreductores tipo ``TT'', habituales en kits educativos de robótica móvil, con caja reductora integrada de relación nominal 1:48 y tensión de operación 3--6 V. Estos valores corresponden a especificaciones típicas reportadas por múltiples fabricantes de este tipo de motorreductor y deben confirmarse contra la hoja de datos específica del lote adquirido.
  
 \subsection{Puente H y dimensionamiento}
-Dado que se manejan cuatro motores, se utilizan dos módulos TB6612FNG (un módulo para el flanco derecho y otro para el izquierdo). Según el fabricante, cada canal soporta 1.2 A continuos y hasta 3.2 A pico \cite{tb6612fng}. Al distribuir la carga en dos controladores, se garantiza que la corriente de arranque de los motores en paralelo no exceda los límites operativos ni active la protección térmica de los integrados.Esta capacidad de manejo de corriente eficiente es posible gracias a la arquitectura interna basada en MOSFETs de baja resistencia, ilustrada en el diagrama de bloques del controlador (ver Figura \ref{fig:tb6612fng}) \cite{tb6612fng}."
-
-\begin{figure}[H]
-    \centering
-    \figsafe{Block Diagram.png}{0.95\linewidth}
-    \caption{Diagrama de bloques interno del controlador TB6612FNG.}
-    \label{fig:tb6612fng}
-\end{figure}
+Dado que se manejan cuatro motores, se utilizan dos módulos TB6612FNG (un módulo para el flanco derecho y otro para el izquierdo). Según el fabricante, cada canal soporta 1.2 A continuos y hasta 3.2 A pico \cite{tb6612fng}. Al distribuir la carga en dos controladores, se garantiza que la corriente de arranque de los motores en paralelo no exceda los límites operativos ni active la protección térmica de los integrados. Esta capacidad de manejo de corriente es posible gracias a la arquitectura interna basada en transistores MOSFET de baja resistencia de encendido \cite{tb6612fng}.
 
 \subsection{Arquitectura de alimentación independiente}
 Se diseñó una arquitectura de potencia aislada a partir de una única batería de polímero de litio (LiPo) de alto rendimiento, marca CNHL (grado dron), de 3 celdas (3S), con una tensión nominal de 11.1 V y una capacidad de 2200 mAh. La elección de una batería orientada a vehículos aéreos no tripulados garantiza una alta tasa de descarga continua, capaz de suministrar los picos de corriente demandados por los cuatro motorreductores durante el arranque sin sufrir caídas abruptas de tensión. A partir de esta fuente primaria, el sistema se ramifica compartiendo una tierra común:
 
 \begin{itemize}
-\item \textbf{Potencia de motores:} El voltaje de 11.1 V de la batería CNHL ingresa a un módulo regulador DC-DC buck LM2596 \cite{lm2596}, el cual reduce eficientemente la tensión a un nivel seguro (ej. 6 V) para la entrada de potencia ($VM$) de los módulos TB6612FNG y, en consecuencia, de los motores.El circuito reductor implementado sigue la topología de referencia del fabricante para garantizar una salida estable ante fluctuaciones de carga, tal como se detalla en la Figura \ref{fig:lm2596} \cite{lm2596}.".
+\item \textbf{Potencia de motores (riel de 8.0 V):} La batería alimenta un regulador reductor XL4015 \cite{xl4015}, de 5 A, que baja la tensión a 8.0 V. Ese riel entra en la entrada de potencia ($VM$) de los dos TB6612FNG y, desde allí, a los cuatro motorreductores. Regular esta rama es obligatorio: la batería llega a 12.6 V con la carga completa y los motores están especificados para 9 V, así que conectarlos directo al pack los sobrepasaría en más de un 40\,\%. El riel de 8.0 V los mantiene dentro de especificación y con la misma tensión al inicio y al final de la descarga.
 
-\begin{figure}[H]
-    \centering
-    \figsafe{Typical Application.png}{1\linewidth}
-    \caption{Circuito típico de aplicación del regulador Buck LM2596.}
-    \label{fig:lm2596}
-\end{figure}
-
-
-\item \textbf{Lógica/control:} En paralelo, la alimentación principal ingresa a un módulo regulador de protoboard dual que entrega 3.3 V estables para alimentar el microcontrolador ESP32 \cite{esp32} y los pines de referencia lógica ($VCC$) de los puentes H.
+\item \textbf{Lógica y audio (riel de 5.0 V):} En paralelo, un segundo reductor LM2596 \cite{lm2596}, de 3 A, entrega un riel de 5.0 V que alimenta la placa del ESP32-S3, el RP2040 (por su pin \texttt{VSYS}) y el amplificador de audio. Los pines de referencia lógica ($VCC$) de los puentes H toman los 3.3 V del propio RP2040, que es quien genera sus señales de entrada.
 \end{itemize}
-Esta separación por conmutación, sumada a la rigidez dieléctrica y alta capacidad de respuesta de la batería LiPo, evita que los transitorios mecánicos de los motores provoquen reinicios (brownouts) en la lógica del microcontrolador.
+Esta separación en dos rieles, sumada a la rigidez dieléctrica y a la alta capacidad de respuesta de la batería LiPo, evita que los transitorios mecánicos de los motores provoquen reinicios (brownouts) en la lógica de control. La corriente de la batería pasa además por un fusible de 7.5 A, dimensionado para proteger el cableado y el pack ante un cortocircuito.
  
 \subsection{Cableado}
-El cableado de potencia se dimensiona en calibre suficiente para la corriente de arranque estimada y se mantiene físicamente separado del cableado de señal (ESP32 a TB6612FNG) para reducir el acoplamiento de ruido eléctrico durante la conmutación de los motores.
+El cableado de potencia se dimensiona en calibre suficiente para la corriente de arranque estimada y se mantiene físicamente separado del cableado de señal (del RP2040 a los TB6612FNG) para reducir el acoplamiento de ruido eléctrico durante la conmutación de los motores.
 
 \subsection{Arquitectura de control distribuida: placas utilizadas y su función}
 
@@ -215,49 +247,179 @@ El Entregable 1 describía un único microcontrolador ESP32 clásico que generab
 \item Un \textbf{cuerpo} (RP2040, Raspberry Pi Pico) que se limita a ejecutar: recibe cuatro intensidades de potencia por puerto serial y las traduce en PWM y líneas de dirección, aportando además la seguridad de un \emph{dead-man} (vigilante de comunicación) implementado por firmware.
 \end{itemize}
 
-La Tabla~\ref{tab:placas} resume las placas y el uso dado a cada una.
+La Figura~\ref{fig:arquitectura} presenta el ensamblaje completo: la alimentación, las dos placas de control, la etapa de potencia y los periféricos, con los enlaces que los conectan. La Tabla~\ref{tab:placas} resume las placas y el uso dado a cada una.
 
-\begin{table}[H]
+\begin{figure*}[t]
+\centering
+\begin{tikzpicture}[
+  font=\footnotesize,
+  >={Latex[length=1.6mm]},
+  box/.style={draw, rounded corners=2pt, align=center, inner sep=3pt, minimum height=7mm, font=\scriptsize},
+  pow/.style={box, fill=red!10},
+  drv/.style={box, fill=orange!15},
+  mcu/.style={box, fill=blue!10},
+  per/.style={box, fill=green!12},
+  pw/.style={thick, draw=red!55!black},
+  sig/.style={draw=black!65},
+]
+% alimentacion
+\node[pow] (bt) at (1.5,4.3) {Batería LiPo 3S\\ 11.1 V};
+\node[pow] (xl) at (4.6,6.2) {XL4015\\ 8.0 V};
+\node[pow] (lm) at (4.6,2.4) {LM2596\\ 5.0 V};
+% etapa de potencia
+\node[drv] (d1) at (8.3,7.1) {TB6612FNG \#1};
+\node[drv] (d2) at (8.3,5.8) {TB6612FNG \#2};
+\node[box] (mot) at (11.9,6.45) {4 ×\\ motorreductor DC};
+% control
+\node[mcu] (pico) at (8.5,3.5) {RP2040 (cuerpo)\\ 4 PWM a 20 kHz\\ 8 dir + STBY};
+\node[mcu] (s3) at (11.9,3.5) {ESP32-S3 (cerebro)\\ Wi-Fi y control};
+% perifericos
+\node[per] (cam) at (15.7,6.2) {Cámara OV3660\\ (DVP + SCCB)};
+\node[per] (imu) at (15.7,4.7) {Sensor BMI160\\ (I\textsuperscript{2}C 100 kHz)};
+\node[per] (aud) at (15.7,3.2) {DAC + amp. + parlante\\ (I\textsuperscript{2}S)};
+\node[per] (led) at (15.7,1.7) {Tira WS2812\\ (RMT)};
+% alimentacion (lineas)
+\draw[pw] (bt) -- (xl);
+\draw[pw] (bt) -- (lm);
+\draw[pw] (xl) -- (d1);
+\draw[pw] (xl) -- (d2);
+\coordinate (r5) at (6.6,2.4);
+\draw[pw] (lm.east) -- (r5);
+\draw[pw] (r5) |- (pico.west);
+\draw[pw] (r5) -- (11.9,2.4) |- (s3.south);
+% potencia a los motores
+\draw[sig] (d1) -- (mot);
+\draw[sig] (d2) -- (mot);
+% enlaces de control
+\draw[<->,sig] (s3.west) -- (pico.east);
+\node[font=\tiny, above] at (10.2,3.5) {UART 921600};
+\draw[sig] (pico.north) -- (d2.south);
+\node[font=\tiny, right] at (8.6,4.7) {PWM + dir};
+% bus a perifericos
+\coordinate (bus) at (13.7,3.5);
+\draw[sig] (s3.east) -- (bus);
+\draw[sig] (bus) |- (cam.west);
+\draw[sig] (bus) |- (imu.west);
+\draw[sig] (bus) |- (aud.west);
+\draw[sig] (bus) |- (led.west);
+% leyenda
+\draw[pw] (1.2,0.9) -- (2.0,0.9) node[right,font=\tiny]{alimentación};
+\draw[sig] (1.2,0.4) -- (2.0,0.4) node[right,font=\tiny]{señal / datos};
+\end{tikzpicture}
+\caption{Diagrama del ensamblaje: alimentación, control, etapa de potencia y periféricos, con los enlaces que los conectan.}
+\label{fig:arquitectura}
+\end{figure*}
+
+\begin{table}[htbp]
 \centering
 \caption{Placas utilizadas y su función dentro del sistema.}
 \label{tab:placas}
 \small
-\begin{tabular}{|p{2.1cm}|p{1.5cm}|p{4.3cm}|}
-\hline
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{2.3cm}>{\raggedright\arraybackslash}p{1.3cm}>{\raggedright\arraybackslash}p{4.2cm}@{}}
+\toprule
 \textbf{Placa} & \textbf{MCU} & \textbf{Función en el proyecto} \\
-\hline
+\midrule
 ESP32-S3-CAM (WROOM-1 N16R8) & ESP32-S3 & Cerebro: Wi-Fi (SoftAP), cámara, audio, sensor de movimiento y control del vehículo; puerto serial con el cuerpo. \\
-\hline
-Raspberry Pi Pico & RP2040 & Cuerpo: 4 PWM a 20 kHz + 8 líneas de dirección + \emph{STBY} para los dos ROB-14450; vigilante (\emph{dead-man}) de 100 ms. \\
-\hline
+\midrule
+Raspberry Pi Pico & RP2040 & Cuerpo: 4 PWM a 20 kHz + 8 líneas de dirección + \emph{STBY} para los dos TB6612FNG; vigilante (\emph{dead-man}) de 100 ms. \\
+\midrule
 ESP32 clásico (\texttt{esp32dev}) & ESP32 & Prototipo del Entregable 1; retirado del vehículo. Su lógica de mezcla se portó al cerebro. \\
-\hline
+\bottomrule
 \end{tabular}
 \end{table}
 
 El cerebro es un ESP32-S3 de dos núcleos con 16 MB de memoria flash y 8 MB de PSRAM, montado sobre una placa portadora de 40 pines (Freenove ESP32-S3-WROOM) a la que se conecta la cámara por un conector plano. La PSRAM es indispensable para guardar las imágenes de la cámara mientras se procesan, y los dos núcleos permiten repartir las tareas: la red y el audio por un lado, el control del movimiento por el otro. El cuerpo es un RP2040 (dos núcleos Cortex-M0+ a 133 MHz). Se eligió por tres razones prácticas: ya disponíamos de uno, ofrece muchos pines de propósito general y se comunica con el ESP32 de forma nativa a 3.3 V. Esta última es la más cómoda, porque un Arduino clásico trabaja a 5 V y habría exigido circuitos adicionales para adaptar los niveles de las señales. A eso se suma que el RP2040 genera el PWM con su propio hardware, a cualquier frecuencia y sin carga para el cerebro, que solo le dedica los dos pines del puerto serial. La alternativa evaluada fue un expansor de PWM por I\textsuperscript{2}C (el PCA9685), que se descartó porque en ese momento la tienda estaba cerrada y no había manera de conseguirlo. El detalle de las conexiones y la asignación de pines se documenta en \texttt{docs/circuit-plan.md} y en el esquema eléctrico del repositorio.
 
+\subsection{Asignación de pines}
+
+La Figura~\ref{fig:pines_s3} resume el uso de cada pin del cerebro y la Figura~\ref{fig:pines_rp2040} el del cuerpo. Las entradas marcadas como \emph{reserva} quedan disponibles pero no se cablearon en esta etapa.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  node distance=0.7mm,
+  pin/.style={draw, rounded corners=1pt, minimum width=62mm, align=left,
+              inner sep=2pt, font=\tiny},
+  cam/.style={pin, fill=green!12, draw=green!45!black},
+  bus/.style={pin, fill=blue!10, draw=blue!45!black},
+  aud/.style={pin, fill=orange!14, draw=orange!60!black},
+  aux/.style={pin, fill=black!6, draw=black!45},
+  hdr/.style={pin, draw=none, font=\tiny\bfseries, text=black!65},
+]
+\node[hdr] (h1) {CÁMARA OV3660 (fila izquierda, fija)};
+\node[cam, below=of h1] (c1) {GPIO15 XCLK $\cdot$ GPIO4 SIOD $\cdot$ GPIO5 SIOC};
+\node[cam, below=of c1] (c2) {GPIO16/17/18/12/10/8/9/11 datos D7\dots D0};
+\node[cam, below=of c2] (c3) {GPIO6 VSYNC $\cdot$ GPIO7 HREF $\cdot$ GPIO13 PCLK};
+\node[hdr, below=1.6mm of c3] (h2) {ENLACE CON EL CUERPO (UART1, 921600 baud) };
+\node[bus, below=of h2] (b1) {GPIO1 TX $\rightarrow$ cuerpo (GP17)};
+\node[bus, below=of b1] (b2) {GPIO2 RX $\leftarrow$ cuerpo (GP16)};
+\node[hdr, below=1.6mm of b2] (h3) {SENSOR DE MOVIMIENTO (I\textsuperscript{2}C 100 kHz)};
+\node[bus, below=of h3] (b3) {GPIO41 SDA $\cdot$ GPIO42 SCL $\rightarrow$ BMI160};
+\node[hdr, below=1.6mm of b3] (h4) {AUDIO (I\textsuperscript{2}S)};
+\node[aud, below=of h4] (a1) {GPIO45 LRCK $\cdot$ GPIO47 BCK $\cdot$ GPIO21 DIN $\rightarrow$ PCM5102A};
+\node[hdr, below=1.6mm of a1] (h5) {LUCES Y ALMACENAMIENTO};
+\node[aux, below=of h5] (x1) {GPIO48 datos tira WS2812 / LED integrado};
+\node[aux, below=of x1] (x2) {GPIO38/39/40 microSD (reserva)};
+\node[aux, below=of x2] (x3) {GPIO43/44 consola serie (USB)};
+\node[aux, below=of x3] (x4) {GPIO0, 19, 20 BOOT y USB (no usados)};
+\end{tikzpicture}
+\caption{Asignación de pines del cerebro (ESP32-S3-CAM).}
+\label{fig:pines_s3}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  node distance=0.7mm,
+  pin/.style={draw, rounded corners=1pt, minimum width=62mm, align=left,
+              inner sep=2pt, font=\tiny},
+  drv/.style={pin, fill=red!10, draw=red!45!black},
+  bus/.style={pin, fill=blue!10, draw=blue!45!black},
+  aux/.style={pin, fill=black!6, draw=black!45},
+  hdr/.style={pin, draw=none, font=\tiny\bfseries, text=black!65},
+]
+\node[hdr] (h1) {ETAPA DE POTENCIA (2 $\times$ TB6612FNG)};
+\node[drv, below=of h1] (d1) {GP0 PWMA \#1 (slice 0A)};
+\node[drv, below=of d1] (d2) {GP1 AIN1 \#1 $\cdot$ GP2 AIN2 \#1};
+\node[drv, below=of d2] (d3) {GP3 BIN2 \#1 $\cdot$ GP4 BIN1 \#1};
+\node[drv, below=of d3] (d4) {GP5 PWMB \#1 (slice 2B)};
+\node[drv, below=of d4] (d5) {GP10 PWMA \#2 (slice 5A)};
+\node[drv, below=of d5] (d6) {GP11 AIN1 \#2 $\cdot$ GP12 AIN2 \#2};
+\node[drv, below=of d6] (d7) {GP13 BIN2 \#2 $\cdot$ GP14 BIN1 \#2};
+\node[drv, below=of d7] (d8) {GP15 PWMB \#2 (slice 7B)};
+\node[drv, below=of d8] (d9) {GP28 STBY compartido (vía 1 k$\Omega$)};
+\node[hdr, below=1.6mm of d9] (h2) {ENLACE CON EL CEREBRO (UART0, 921600 baud)};
+\node[bus, below=of h2] (b1) {GP16 TX $\rightarrow$ S3 GPIO2};
+\node[bus, below=of b1] (b2) {GP17 RX $\leftarrow$ S3 GPIO1};
+\node[hdr, below=1.6mm of b2] (h3) {INDICACIÓN Y PINES LIBRES};
+\node[aux, below=of h3] (x1) {GP25 LED de estado integrado};
+\node[aux, below=of x1] (x2) {GP6--GP9, GP18--GP22, GP26/GP27 libres};
+\end{tikzpicture}
+\caption{Asignación de pines del cuerpo (RP2040).}
+\label{fig:pines_rp2040}
+\end{figure}
+
 \subsection{Dispositivos de entrada y salida}
 
 Además de los puentes H y los motores, el vehículo integra cuatro dispositivos que amplían su percepción y su capacidad de interacción. La Tabla~\ref{tab:io} los resume y las subsecciones siguientes detallan cada uno.
 
-\begin{table}[H]
+\begin{table}[htbp]
 \centering
 \caption{Dispositivos de entrada y salida del vehículo.}
 \label{tab:io}
 \small
-\begin{tabular}{|p{2.0cm}|p{1.9cm}|p{4.0cm}|}
-\hline
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{2.2cm}>{\raggedright\arraybackslash}p{1.9cm}>{\raggedright\arraybackslash}p{3.7cm}@{}}
+\toprule
 \textbf{Dispositivo} & \textbf{Modelo} & \textbf{Cómo se conecta y para qué sirve} \\
-\hline
+\midrule
 Cámara (entrada) & OV3660 & Conexión paralela de la propia placa; guarda las imágenes JPEG en la PSRAM y las transmite en vivo. \\
-\hline
+\midrule
 Sensor de movimiento (entrada) & BMI160 (6 ejes) & I\textsuperscript{2}C a 100 kHz; orientación, inclinación y detección de golpes. \\
-\hline
+\midrule
 Audio (salida) & PCM5102A + amplificador clase D & I\textsuperscript{2}S hacia el convertidor de audio y el parlante. \\
-\hline
+\midrule
 Luces (salida) & Tira WS2812 y LED RGB integrado & RMT (generador de pulsos) en GPIO48; estado y alumbrado. \\
-\hline
+\bottomrule
 \end{tabular}
 \end{table}
 
@@ -276,26 +438,17 @@ El sensor de movimiento es un \textbf{BMI160} de 6 ejes ---acelerómetro y giros
 \subsection{Primera etapa del firmware: rutina avance--giro--detención}
 
 
-El firmware es implementado en C/C++ para el microcontrolador ESP32 \cite{esp32}. Tiene una secuencia de arranque, donde los 4 motores se activan suavemente para probar que el PWM este funcionando correctamente y la direccion de rotacion sea la correcta. Después de esto se ejecuta la secuencia principal, donde hay varias tareas previamente implementadas:
+El firmware es implementado en C/C++ para el microcontrolador ESP32 \cite{esp32}. Tiene una secuencia de arranque, en la que los 4 motores se activan suavemente para comprobar que el PWM esté funcionando correctamente y que la dirección de rotación sea la correcta. Después de esto se ejecuta la secuencia principal, que tiene varias tareas previamente implementadas:
 \begin{itemize}
 \item Movimiento lento hacia adelante y atrás.
 \item Movimiento rápido hacia adelante y atrás.
-\item Giro sobre el propio eje del vehiculo, en ambos sentidos.
-\item Patron de estrella (movimiento en curva hacia el frente y hacia atrás). 
+\item Giro sobre el propio eje del vehículo, en ambos sentidos.
+\item Patrón de estrella (movimiento en curva hacia el frente y hacia atrás). 
 
 \end{itemize}
 Para la compilación, gestión de dependencias y despliegue del código en el microcontrolador se empleó el ecosistema PlatformIO integrado en Visual Studio Code (VSCode) \cite{platformio}. Esta herramienta ofrece soporte nativo para el ESP32, permitiendo un control estricto de las librerías del framework y la automatización del proceso de carga mediante interfaz serial, garantizando un entorno de desarrollo reproducible y profesional frente a los entornos de desarrollo tradicionales de Arduino.
 
-Los pines de control se asignan a puertos GPIO digitales aptos para  modulación por ancho de pulso (PWM). La selección de estos puertos se realizó respetando la distribución de periféricos del microcontrolador, como se muestra en el esquema de pines de la Figura \ref{fig:esp32} \cite{esp32}:
-
-\begin{figure}[H]
-    \centering
-    \figsafe{ESP32-Board-Pinout.png}{1\linewidth}
-    \caption{Distribución de pines (Pinout) del microcontrolador ESP32 destacando puertos GPIO/PWM.}
-    \label{fig:esp32}
-\end{figure}
-
-La seleccion de estos puertos se hizo tomando los pines mas cercanos a los modulos puente H:
+Los pines de control se asignan a puertos GPIO aptos para modulación por ancho de pulso (PWM). La asignación se hizo tomando los pines más cercanos a los módulos puente H. El reparto de pines del sistema actual, ya dividido entre cerebro y cuerpo, se detalla en las Figuras~\ref{fig:pines_s3} y~\ref{fig:pines_rp2040}.
 
 \begin{verbatim}
 struct Motor {
@@ -312,16 +465,16 @@ Motor motors[] = {
 };
 \end{verbatim}
 
-La rutina ciclica del robot (loop) ejecuta una lista de tareas establecidas, donde cada una tiene una duracion, velocidad base, y velocidades para pares diferenciales (izquierda/derecha, frente/atras):
+La rutina cíclica del robot (\emph{loop}) ejecuta una lista de tareas establecidas, donde cada una tiene una duración, una velocidad base y velocidades para pares diferenciales (izquierda/derecha, frente/atrás):
 
 \begin{verbatim}
 struct Task {
     int time_ms;
     int input_all;
-    int input_front_rear; // added to front 
-    wheels, subtracted from rear wheels
-    int input_left_right; // added to left 
-    wheels, subtracted from right wheels
+    int input_front_rear; // added to front wheels,
+                          // subtracted from rear wheels
+    int input_left_right; // added to left wheels,
+                          // subtracted from right wheels
 };
 
 Task tasks[] = {
@@ -337,7 +490,7 @@ Task tasks[] = {
 ...
 }
 \end{verbatim}
-\textbf{El codigo completo se puede encontrar en el repositorio:} https://github.com/botero-dev/usbbog-realidad-mixta
+\textbf{El código completo se puede encontrar en el repositorio:} https://github.com/botero-dev/usbbog-realidad-mixta
 
 Con esa primera versión ya validada, el firmware se reorganizó en los dos programas que se describen a continuación: uno para el cerebro y otro para el cuerpo del vehículo.
 
@@ -351,16 +504,25 @@ El cuerpo recibe esos cuatro niveles y genera con el propio hardware del chip la
 La comunicación usa el puerto serial a 921600 baudios y un formato de trama fijo para que ambos programas se entiendan sin ambigüedad. El cerebro envía a 100 Hz una trama de 13 bytes con el tipo de orden, un contador de secuencia y los cuatro niveles, y además un byte de verificación (CRC) que permite descartar cualquier trama alterada por ruido. El cuerpo responde a 10 Hz con una trama de estado que informa si la comunicación está sana y si el vigilante está armado. Ese byte de verificación es lo que hace robusto el enlace: en las pruebas se mantuvo en cero errores durante miles de tramas.
 
 \subsection{Interfaz de usuario}
-El usuario gobierna el vehículo desde una página web que la propia placa sirve, sin instalar nada: basta con unirse a su red Wi-Fi y abrir la dirección en el navegador. La página muestra el video en vivo y ofrece los mandos de conducción, los botones de sonido y un panel con la inclinación medida por el sensor. Como complemento se desarrolló una aplicación de escritorio en Godot que consume esa misma interfaz HTTP.
+El usuario gobierna el vehículo desde una página web que la propia placa sirve, sin instalar nada: basta con unirse a su red Wi-Fi y abrir la dirección en el navegador. La página muestra el video en vivo y ofrece los mandos de conducción, los botones de sonido y un panel con la inclinación medida por el sensor. La Figura~\ref{fig:interfaz} la muestra tal como se presenta en un teléfono.
+
+\begin{figure}[t]
+    \centering
+    \figsafe{figures/interfaz_web.jpg}{0.55\linewidth}
+    \caption{Interfaz web servida por la placa: video en vivo, panel de conducción con botones de dirección y \texttt{STOP}, control de velocidad y línea de estado del enlace con el cuerpo. Captura desde un teléfono en \texttt{192.168.4.1}.}
+    \label{fig:interfaz}
+\end{figure}
+
+Como primer paso hacia la interacción con un motor de juegos, se desarrolló un cliente en Godot que se comunica por HTTP con la placa; su integración completa con el vehículo quedó como trabajo futuro.
 
 \section{Resultados}
 
-El diseño electromecánico detallado en la sección anterior se materializó en un prototipo funcional, cuya integración física se presenta en la Figura \ref{fig:ensamble_fisico}. En esta vista superior se evidencia la distribución del cableado de potencia y señal, la ubicación central del microcontrolador ESP32 y la disposición simétrica de los controladores de motor para la tracción 4WD.
+El diseño electromecánico detallado en la sección anterior se materializó en un prototipo funcional, cuya integración física se presenta en la Figura \ref{fig:ensamble_fisico}. En ella se aprecian el chasis de tracción 4WD con sus cuatro motorreductores, el montaje central de la placa del ESP32-S3 (cerebro) con su cámara, un controlador TB6612FNG, el parlante y el cableado de potencia y señal.
 
 \begin{figure}[H]
     \centering
-    \figsafe{ensamble_fisico.jpeg}{0.8\linewidth}
-    \caption{Vista superior del ensamblaje electromecánico final del vehículo RC, mostrando la integración del chasis, motores, puentes H, regulador de voltaje y microcontrolador.}
+    \figsafe{figures/montaje.jpg}{0.9\linewidth}
+    \caption{Prototipo ensamblado: chasis 4WD con sus cuatro motorreductores, la placa del ESP32-S3 con la cámara, un controlador TB6612FNG, el parlante y el cableado.}
     \label{fig:ensamble_fisico}
 \end{figure}
 
@@ -374,9 +536,9 @@ $$F_{min} = m \cdot g \cdot \mu = 0.63 \cdot 9.81 \cdot 0.6 = 3.70 \text{ N}$$
 El torque total necesario en el eje de las ruedas es $\tau_{req} = F_{min} \cdot r = 3.70 \text{ N} \cdot 0.03375 \text{ m} = 0.125 \text{ N}\cdot\text{m}$. Dado que el sistema 4WD distribuye la carga, cada uno de los cuatro motores TT proporciona un torque combinado de salida superior al requerido, garantizando el desplazamiento del vehículo.
 
 \subsection{Análisis Eléctrico y Dimensionamiento}
-Según las especificaciones técnicas, el motor TT estándar a 6 V presenta una corriente de arranque de aproximadamente $1.0 \text{ A}$ por unidad. Al estar acoplados en paralelo por lado, cada puente H TB6612FNG experimenta un pico de corriente de $2.0 \text{ A}$ en el arranque. Dado que el controlador TB6612FNG soporta hasta $3.2 \text{ A}$ pico por canal \cite{tb6612fng}, el sistema está correctamente dimensionado y opera dentro de un margen seguro frente a su límite térmico, validando la arquitectura de alimentación propuesta.
+Con el riel de motores en 8.0 V, cada motor TT drena aproximadamente $1.0 \text{ A}$ en rotor bloqueado, un valor medido sobre el prototipo. Al estar acoplados en paralelo por lado, cada puente H TB6612FNG experimenta un pico de corriente de $2.0 \text{ A}$ en el arranque, y los cuatro motores en conjunto exigen $4.0 \text{ A}$ del riel. Dado que el controlador TB6612FNG soporta hasta $3.2 \text{ A}$ pico por canal \cite{tb6612fng} y el reductor XL4015 entrega 5 A, el sistema está correctamente dimensionado y opera dentro de un margen seguro frente a su límite térmico, validando la arquitectura de alimentación propuesta.
 
-En un momento dañamos el regulador de voltaje al conectarle el voltaje de entrada con la polaridad invertida. Por esto tuvimos que buscar opciones para poder alimentar el carro robot. Una de las opciones fue usar un juego de 4 pilas AA en serie. En principio, esto parecía que iba a funcionar, ya que las ruedas giraban bien mientras programábamos el microcontrolador, y teníamos el carro en un pedestal en la mesa de trabajo. Pero en cuanto pusimos el carro sobre sus ruedas, el consumo de corriente de los motores hacía caer el voltaje por el peso de sus componentes, y a eso se sumaba la fricción entre la superficie y la llanta, lo que provocaba que el microcontrolador se reiniciara. Afortunadamente encontramos un par de baterías 18650, y de esta manera logramos alimentar el carro con un voltaje adecuado para los motores, alrededor de 7.4V. Con este par de baterías hicimos la prueba final de funcionamiento que se ve en el video.
+La alimentación definitiva se validó sobre el vehículo armado. Con la batería LiPo 3S y los dos reductores ajustados ---XL4015 a 8.0 V para los motores y LM2596 a 5.0 V para la lógica---, los cuatro motores conectados a los dos TB6612FNG giraron correctamente desde el pack real, sin reinicios del microcontrolador durante las pruebas. El reparto de la corriente en dos rieles, con la referencia de los motores y la de la lógica unidas en un solo punto de tierra, fue lo que evitó que los picos de los motores afectaran a la electrónica de control.
 
 
 \textbf{Video del vehículo en funcionamiento mostrando la ejecución completa de la rutina automática:} https://youtu.be/Z-YuQ6jdH08
@@ -387,21 +549,51 @@ En un momento dañamos el regulador de voltaje al conectarle el voltaje de entra
 La etapa de potencia se verificó por partes. En el cuerpo, el autotest comprobó los cuatro modos del puente H ---avance, reversa, frenado y rueda libre--- y confirmó que la línea de habilitación permanece en bajo antes de que el firmware la active, condición sobre la que descansa toda la seguridad del sistema. Con los cuatro motores conectados y alimentados desde la batería real, el vehículo se desplazó correctamente, lo que valida el reparto de la carga entre los dos controladores y el dimensionamiento de la etapa de potencia.
 
 \subsection{Validación de la cámara}
-La cámara se detectó correctamente como un sensor OV3660 y sus imágenes se almacenaron en la PSRAM, sin necesidad de reducir la resolución. La transmisión de video en vivo funcionó de manera estable, con una tasa que se mantuvo entre 15 y 30 cuadros por segundo (fps) durante las pruebas.
+La cámara se detectó correctamente como un sensor OV3660 y sus imágenes se almacenaron en la PSRAM, sin necesidad de reducir la resolución. El Listado~\ref{lst:camara} reproduce la línea de arranque donde el firmware identifica el sensor. La transmisión de video en vivo funcionó de manera estable, con una tasa que se mantuvo entre 15 y 30 cuadros por segundo (fps) durante las pruebas.
+
+\begin{lstlisting}[style=consola, caption={Identificación del sensor de cámara en el arranque.}, label={lst:camara}]
+brain  --  ESP32-S3 camera + audio + AP (cam-test merged in)
+[cam] PID 0x3660  (OV3660 = 0x3660, OV2640 = 0x2640)
+\end{lstlisting}
 
 \subsection{Validación del audio}
-La cadena de audio ---convertidor de digital a analógico, amplificador y parlante--- reprodujo correctamente los tonos de prueba y un fragmento de audio. La prueba decisiva consistió en reproducir sonido con el video en marcha: la reproducción terminó en 1031 ms frente a los 1020 ms esperados (cerca de un 1\,\% por encima), sin cortes ni interrupciones. Esto confirma que la cámara y el audio pueden funcionar a la vez compartiendo la memoria PSRAM sin conflictos.
+La cadena de audio ---convertidor de digital a analógico, amplificador y parlante--- reprodujo correctamente los tonos de prueba y un fragmento de audio. La prueba decisiva consistió en reproducir sonido con el video en marcha, y el Listado~\ref{lst:audio} registra esas reproducciones. La pieza de audio terminó en 4097 ms frente a los 4136 ms esperados, y los tonos en 1031 ms frente a 1020 ms: en ambos casos la diferencia ronda el 1\,\%, sin cortes ni interrupciones. Esto confirma que la cámara y el audio pueden funcionar a la vez compartiendo la memoria PSRAM sin conflictos.
+
+\begin{lstlisting}[style=consola, caption={Registro de reproducción de audio con el video en marcha.}, label={lst:audio}]
+[http] /play: 'src=beeps'
+[audio] playing beeps (44100 Hz) at 0.0200 (2.00% FS, -34.0 dBFS)
+[audio] done in 1031 ms (expected ~1020 ms)
+[http] /play: 'src=clip'
+[audio] playing clip (44100 Hz) at 0.0500 (5.00% FS, -26.0 dBFS)
+[audio] done in 4097 ms (expected ~4136 ms)
+\end{lstlisting}
 
 \subsection{Validación del sensor de movimiento}
-El sensor respondió en el bus I\textsuperscript{2}C en su dirección esperada y entregó datos estables a 200 Hz. La comprobación clave fue la de la gravedad: con el vehículo en reposo, la magnitud estimada de la aceleración fue de 1.046 g, dentro del margen esperado de 1 g. También se comprobó que la velocidad de bus de 400 kHz no es fiable para escribir la configuración de este sensor en el montaje actual, por lo que el sistema trabaja a 100 kHz.
+El sensor respondió en el bus I\textsuperscript{2}C en su dirección esperada y entregó datos estables a 200 Hz, como resume el Listado~\ref{lst:imu}. La comprobación clave fue la de la gravedad: con el vehículo en reposo, la magnitud estimada de la aceleración fue de 1.001 g, dentro del margen esperado de 1 g. También se comprobó que la velocidad de bus de 400 kHz no es fiable para escribir la configuración de este sensor en el montaje actual, por lo que el sistema trabaja a 100 kHz.
+
+\begin{lstlisting}[style=consola, caption={Arranque y verificación de gravedad del sensor de movimiento.}, label={lst:imu}]
+[imu] I2C bus up: controller 0, SDA41/SCL42, 100000 Hz
+[imu] scan on SDA41/SCL42: 1 device(s): 0x69
+[imu] BMI160-family ready: CHIP_ID 0xd1, sampling at 200 Hz on core 1, bus 100000 Hz
+[imu] resting |a| = 1.001 g over 200 samples (still board = 1.000)
+[imu] gravity check PASSED -- the accelerometer scale is right
+\end{lstlisting}
 
 \subsection{Validación del enlace y del vigilante}
-Con ambos microcontroladores conectados, el cerebro envió tramas a 100 Hz durante varios minutos con cero errores de verificación y recibió las respuestas de estado a 10 Hz. El vigilante del cuerpo se probó a propósito: al detener la comunicación desde el cerebro, el cuerpo bajó la habilitación en menos de 100 ms y los motores quedaron sin par, y al reanudarse la comunicación el sistema se recuperó por sí solo. Este comportamiento respalda la seguridad básica del vehículo.
+Con ambos microcontroladores conectados, el cerebro envió tramas a 100 Hz y recibió las respuestas de estado a 10 Hz. Del lado del cuerpo, el contador de tramas descartadas por CRC se mantuvo en cero; del lado del cerebro se registró una sola trama descartada en más de trece mil, lo que confirma la robustez del enlace. El vigilante del cuerpo se probó a propósito, y el Listado~\ref{lst:deadman} recoge el momento exacto del disparo: al detener la comunicación desde el cerebro, el cuerpo bajó la habilitación en menos de 100 ms y los motores quedaron sin par, y al reanudarse la comunicación el sistema se recuperó por sí solo.
+
+\begin{lstlisting}[style=consola, caption={Disparo del vigilante al interrumpir la comunicación desde el cerebro.}, label={lst:deadman}]
+[link]  200 frames/2s  ok 14606  crc 0  timeouts 0  stby 0  seq 13 type 04  duty    +0    +0    +0    +0
+
+*** DEAD-MAN: no motion command for 100 ms -> STBY LOW ***
+
+[link]  160 frames/2s  ok 14766  crc 0  timeouts 1  stby 0  seq 173 type 04  duty    +0    +0    +0    +0
+\end{lstlisting}
 
 \section{Limitaciones y trabajo futuro}
 \begin{itemize}
+\item La integración con el motor de juegos quedó incompleta: se alcanzó un cliente preliminar en Godot que se comunica por HTTP con la placa, pero la interacción completa ---gobernar el vehículo y visualizar su estado desde la aplicación--- no se terminó por falta de tiempo.
 \item El vehículo es teleoperado: todavía no ejecuta un control autónomo a partir de la cámara o del sensor de movimiento.
-\item La dirección de giro de cada motor aún no se ha verificado contra las ruedas, un paso que es necesario cerrar antes de cualquier control automático.
 \item La transmisión de video usa HTTP sobre TCP, cómodo, aunque se puede mejorar para tiempo real; una migración a UDP o a WebRTC reduciría notablemente el retardo.
 \item El sensor de movimiento no incluye brújula, así que no ofrece orientación absoluta y el giro calculado se desvía con el tiempo.
 \item La red propia del vehículo no ofrece Internet, y en algunos teléfonos con datos móviles activos la página no carga hasta desactivarlos.
@@ -409,9 +601,23 @@ Con ambos microcontroladores conectados, el cerebro envió tramas a 100 Hz duran
 \end{itemize}
 
 \section{Conclusiones}
-Se diseñó, implementó y validó un vehículo a control remoto que integra control de motores, transmisión de video, audio y medición inercial. La decisión de diseño más importante fue repartir el trabajo entre dos microcontroladores con responsabilidades separadas: el cerebro concentra la inteligencia y los periféricos, mientras que el cuerpo se encarga de la etapa de potencia y de una parada de seguridad. Eso permitió superar la limitación de pines del cerebro sin renunciar a la cámara, el audio ni la red.
+Se integraron con éxito los componentes electrónicos y multimedia de un vehículo a control remoto: el control de los cuatro motores por PWM y dirección, la cámara con transmisión de video, la salida de audio y un sensor de movimiento de seis ejes. Este fue el resultado más sólido del proyecto. La decisión de diseño más importante fue repartir el trabajo entre dos microcontroladores con responsabilidades separadas: el cerebro concentra la inteligencia y los periféricos, y el cuerpo se encarga de la etapa de potencia y de una parada de seguridad. Esa división permitió superar la limitación de pines del cerebro sin renunciar a la cámara, el audio ni la red.
 
-Según las pruebas realizadas, el prototipo cumple los objetivos planteados: la etapa de potencia mueve el vehículo, los subsistemas de entrada y salida responden, y la comunicación entre ambos microcontroladores es fiable y segura ante fallos. Quedan como trabajo futuro el control autónomo, la migración del video a un transporte de tiempo real y la verificación final de la dirección de los motores.
+La integración de los sensores y de los elementos multimedia fue más profunda de lo que planteaba el alcance inicial, que apuntaba a un vehículo más simple. En cambio, la conexión con un motor de juegos quedó por detrás de lo previsto: se alcanzó a desarrollar un cliente preliminar en Godot que se comunica por HTTP con la placa, pero la interacción completa ---gobernar el vehículo y visualizar su estado desde la aplicación--- no se terminó por falta de tiempo. Ese es el principal frente abierto.
+
+En cuanto al resto de los objetivos, los resultados son positivos. El prototipo se desplaza, los subsistemas de entrada y salida responden, y el enlace entre ambos microcontroladores es fiable y seguro ante fallos, con el vigilante de comunicación disparando en menos de 100 ms. El análisis cuantitativo de las magnitudes mecánicas y eléctricas se contrastó con las mediciones y quedó dentro de lo previsto. Quedan como trabajo futuro cerrar la integración con el motor de juegos, migrar el video a un transporte de tiempo real y avanzar hacia un control autónomo.
+
+\section{Enlace al repositorio}
+
+El código fuente completo ---el firmware de las dos placas, el esquema eléctrico y esta memoria--- está disponible en el repositorio oficial del grupo:
+
+\begin{center}
+\url{https://github.com/botero-dev/usbbog-realidad-mixta}
+\end{center}
+
+El repositorio se organiza en cinco carpetas: \texttt{firmware/} reúne los proyectos de PlatformIO (\texttt{brain/} para el ESP32-S3, \texttt{pico\_body/} para el RP2040 y \texttt{network-test/} para las pruebas de red), \texttt{hardware/} contiene el esquema eléctrico generado y su lista de conexiones, \texttt{game-app/} la aplicación de Godot, \texttt{docs/} la documentación de diseño y \texttt{report/} este documento.
+
+La demostración del vehículo en funcionamiento está en \url{https://youtu.be/Z-YuQ6jdH08}.
 
 % references section
 
@@ -442,6 +648,8 @@ Según las pruebas realizadas, el prototipo cumple los objetivos planteados: la 
 \bibitem{nilsson} J. W. Nilsson and S. A. Riedel, \emph{Electric Circuits}, 10th ed. Boston, MA, USA: Pearson, 2015.
 
 \bibitem{lm2596} Texas Instruments, ``LM2596 SIMPLE SWITCHER Power Converter 150-kHz 3-A Step-Down Voltage Regulator,'' Datasheet, Rev. G, 2020. [Online]. Available: https://www.ti.com/product/LM2596
+
+\bibitem{xl4015} XLSEMI, ``XL4015E1: 5 A 180 kHz 40 V Buck DC-to-DC Converter,'' Datasheet. [Online]. Available: https://www.xlsemi.com/
 
 \bibitem{platformio} PlatformIO Labs, ``PlatformIO: Your permanent home for open source software debuggers and toolchains,'' Online Documentation, 2026. [Online]. Available: https://platformio.org/
 
@@ -476,6 +684,17 @@ Según las pruebas realizadas, el prototipo cumple los objetivos planteados: la 
 \bibitem{ws2812} Worldsemi, ``WS2812B: Intelligent control LED integrated light source,'' Datasheet. [Online]. Available: https://www.worldsemi.com/
 
 \end{thebibliography}
+
+\appendices
+\section{Esquema eléctrico completo}
+
+La Figura~\ref{fig:arquitectura} presenta la arquitectura a nivel de bloques. El esquema
+eléctrico que sigue ---generado en KiCad y verificado con ERC--- detalla el conexionado
+completo del vehículo: la alimentación, la etapa de potencia, las dos placas de control y
+los periféricos, con la lista de conexiones net por net disponible en el repositorio
+(\texttt{hardware/wiring.md}). Por su nivel de detalle se incluye como página completa.
+
+\includepdf[pages=-,fitpaper=true]{figures/esquema_electrico.pdf}
 
 % that's all folks
 \end{document}
