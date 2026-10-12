@@ -88,7 +88,7 @@ you nothing about which one.
 | `GET /capture` | One JPEG snapshot. |
 | `GET /status` | JSON: heap, PSRAM, stream clients, fps, `audio`, sensor settings, LED. |
 | `GET\|POST /play` | `?src=beeps` or `?src=clip`, plus an optional `&vol=0..1000` (per-mille) to set the level with it. Returns immediately; playback happens in the audio task. |
-| `GET\|POST /control` | Sensor and LED settings: `framesize`, `quality`, `brightness`, `contrast`, `saturation`, `hmirror`, `vflip`, `led_r/g/b`, `led_auto`. |
+| `GET\|POST /control` | Sensor settings, plus the lights: `mode=run\|torch\|hazard\|off`, `group=<name>&r/g/b` for one named group, `led_r/g/b` for the whole strip, and `vol=0..1000`. |
 | `GET\|POST /drive` | The motors: `?th=..&turn=..&twist=..` (mixer, per-mille ±1000) **or** `?fl=..&rl=..&rr=..&fr=..` (the raw four duties, all four required). |
 | `GET\|POST /stop` | `?mode=brake` (**default**) / `coast` / `disable`. A stop that coasts is not a stop, so brake is the default. |
 
@@ -114,10 +114,165 @@ The buttons use `fetch()`, not links, and that is not decoration: a plain
 `<a href="/play?...">` would **navigate away** from the page and kill the stream's socket,
 so pressing "beeps" would look like it had stopped the video.
 
-**The LED on `GPIO48`** doubles as status (§2.1): dim blue = idle, green = someone is
-streaming, white = audio playing, and any explicit colour is a torch that turns status mode
-off until `?led_auto=1`. It is driven with `neopixelWrite()` — RMT, never PWM, which on a
-WS2812 data line is not "dim" but corrupted bit timing.
+**The strip on `GPIO48` is the car's lighting**, not a status indicator: it comes on with the
+car and stays on. The pixels are named groups (see *The layout* below), and the firmware's
+default state is an always-on scene.
+
+| State | Set with | What it is |
+| --- | --- | --- |
+| `run` | `?mode=run` | **the boot default**: head lights white and tail lights red, always on at 20/255, with the floor sweeping the hue wheel at the same level |
+| `torch` | `?mode=torch` | that same scene with the head lights at **128/255** |
+| `hazard` | `?mode=hazard` | that same scene with the head and tail **side** lights flashing yellow at **64/255**, ~1.25 Hz || `off` | `?mode=off` | every pixel to zero — all lights dark || `custom` | `?group=..&r/g/b`, or `?led_r/g/b` | a manual per-group scene — the override underneath the three automatic states |
+
+Run, Torch and Hazard are **the same scene differing in one override**, and they share a
+single builder (`scene_render()`). That is deliberate, not tidiness: there is exactly one
+place the tail lights are turned on, so there is no state in which they can be forgotten.
+
+`/status` reports the state as `led_mode`, and the page's **run / torch / hazard / off**
+buttons are *indicators*, not toggles — none of them assumes a state, so a state set by `curl`
+shows up on the page correctly. `hazard` flashes **off and on** rather than switching colour:
+falling back to the running lights for the off half would read as a colour change, not a
+flash.
+
+`off` is a **state**, not a one-off command, so "the lights are off" is something `/status`
+reports and the page can show rather than something you have to remember. It is re-sent on
+every 30 ms tick instead of once: that costs a 1.4 ms write to hold a dark strip, and buys
+back the ability to **recover** — a strip that loses a frame (a marginal data line, a supply
+dip) is repainted 30 ms later rather than staying wrong until the next command. Worth more
+than 5 % of an otherwise empty `loop()` while the strip's data level is still unverified.
+
+> **`off` is not a useful corruption test**, precisely because it re-sends and because a
+> wrong colour on a strip that should be dark is invisible. To test the data path, hold a
+> *visible* static frame in **custom** instead — `?led_r=20&led_g=20&led_b=20` sends once and
+> then the firmware stops writing entirely, so any flicker after that is hardware.
+
+**What is gone, deliberately.** The old status indication (dim blue idle / green streaming /
+white audio) and the whole-strip rainbow. The lights are on whenever the car is, so the strip
+can no longer double as a debug indicator — *"is anyone streaming?"* is answered by the page
+or by `/status`.
+
+### Levels, and the ceiling
+
+Every brightness is a **named level** applied through `level_channel()`, so a colour and a
+brightness stay independent — *"make the tail red"* and *"make the tail dimmer"* are separate
+one-line changes rather than a hunt for a literal:
+
+| Level | Value | What it lights |
+| --- | --- | --- |
+| `kAmbientLevel` | 20/255 | head + tail, always on |
+| `kFloorLevel` | 20/255 | the floor's sweep |
+| `kHazardLevel` | 64/255 | the flashing side lights |
+| `kTorchLevel` | 128/255 | the head lights, torch on |
+
+`kLedMaxChannel = 128` is the **ceiling**, enforced in `led_push()` — the single gate every
+frame from every state passes through, so no mode and no query string can get around it. It is
+a safety limit rather than a brightness setting: it is chosen by the brightest thing in the
+catalogue and only stops something from going past it.
+
+> **The sequence matters, so record it: the ceiling used to be 20.** A global cap cannot
+express "head at 128, floor at 20", so when the torch arrived the cap moved to 128 and 20
+*became a per-mode level* instead of a global one. The guarantee is now "nothing exceeds
+128", **not** "nothing exceeds 20".
+>
+> Max draw with everything lit: 4 head pixels at 128 (~60 mA) plus 25 at 20 (~120 mA) —
+> **about 180 mA**, inside a USB 2.0 port's budget. The per-frame cost is below.
+
+It is driven over the **RMT peripheral** — never PWM, which on a WS2812 data line is not
+"dim" but corrupted bit timing. Not with the core's `neopixelWrite()` though: that sends
+exactly **one** pixel and core 2.0.17 has no N-pixel API, so a strip would show a single
+LED and stale colour after it. `strip_show()` drives RMT through the same wrapper the core
+uses, with the core's own bit timing (100 ns/tick, `T0H` 0.4 µs, `T1H` 0.8 µs — lifted from
+`esp32-hal-rgb-led.c`, not re-invented), and sends the latch explicitly (600 µs) so both
+strip variants agree — the classic wants ≥50 µs, the ECO/V5 ≥280 µs.
+
+**All 29 pixels are addressed every frame.** The strip's own first pixel is **dead** —
+reverse-polarity damage on 2026-10-12, before the wiring was corrected — and it is bypassed,
+so the data lead feeds the second chip and these 29 are the pixels that still work. §2.1 still
+applies: the on-board WS2812 is on the same net, so it shows **pixel 0** of whatever is sent.
+
+The floor's hue step is `(p * 256) / count`, **not** `p * (256 / count)`. At 17 pixels the two
+differ by one hue unit and it would not matter; the correct form is there because at 29 pixels
+the naive one steps by `floor(256/29) = 8`, spans only 224 of the 256 hue units, and leaves a
+**32-unit seam** against a step of 8 — which is visible. Written right once, it cannot be
+wrong for a group of a different length.
+
+The hue is carried in **byte units** (0-255 is a full turn), so it wraps with a plain
+`uint8_t` add and there is no 360-vs-0 branch to get wrong.
+
+### The layout: 29 pixels, named
+
+Labelled by the user, 2026-10-12. `kGroups[]` in `app_httpd.cpp` is the single source of
+truth: the boot banner prints it, `/control?group=` resolves against it, and the compiler
+checks it.
+
+| Group | Indices | Pixels |
+| --- | --- | --- |
+| `tail_right` | 0–1 | 2 |
+| `tail_centre` | 2–5 | 4 |
+| `tail_left` | 6–7 | 2 |
+| `floor` | 8–24 | 17 |
+| `head_left` | 25–26 | 2 |
+| `head_right` | 27–28 | 2 |
+
+The banner states it on every boot, and from the table rather than from a hand-copied
+string — so it cannot drift:
+
+```
+[led] 29 pixels:  tail_right 0-1  tail_centre 2-5  tail_left 6-7  floor 8-24  head_left 25-26  head_right 27-28
+```
+
+**Index 0 is not the strip's first chip.** Pixel 1 of the strip is dead and bypassed, so
+firmware index 0 lands on its *second* chip. Rewire the strip and every label moves.
+
+`?group=<name>&r=..&g=..&b=..` lights one group and opens the **Custom** mode, where the
+frame is a per-pixel scene that group writes modify. The groups **compose**:
+
+```bash
+curl 'http://192.168.4.1/control?led_r=255&led_g=0&led_b=0'   # the whole strip red
+curl 'http://192.168.4.1/control?group=floor&b=255'           # floor blue, rest still red
+```
+
+Missing `r`/`g`/`b` in a group write are 0, and a request carrying `group` is *always* a group
+write — handled on its own — so it can never be confused with the whole-strip `led_r/g/b`.
+A group write and a whole-strip colour both land in **Custom** and stay there: the renderer
+deliberately leaves that state alone, because rebuilding it 30 ms later would throw the
+user's work away. `?mode=run` (or torch, or hazard) is how you hand it back to the renderer.
+
+To check the order is real, light the groups one at a time and count them:
+`?group=tail_right&r=255`, then `tail_centre`, `tail_left`, `floor` (17 pixels — the long one),
+`head_left`, `head_right`.
+
+> **The tiling is checked by the compiler, not by eye.** A recursive `constexpr` — a loop
+> inside a `constexpr` body is C++14, and this core builds with `-std=gnu++11`, the same trap
+> that stopped the link's CRC compiling — asserts that each group starts where the previous
+> one ended and the last ends exactly at `kStripLeds`. A gap or an overlap is a lighting bug
+> that would otherwise only appear on the car at night. **Verified by deliberately breaking
+> it:** changing the floor to 16 pixels fails the build with
+> *"LED groups must tile 0..kStripLeds-1: no gap, no overlap, no extras"*. Prove a guard
+> fires once, or it is decoration.
+
+> ⚠️ **What it costs now.** Uncapped, full white across 29 pixels would be ~1.7 A (60 mA per
+> WS2812B) — well past the LM2596's comfort and 3.4× a USB 2.0 port's entire budget. With the
+> levels above the whole strip lit at once is **~180 mA** (4 head pixels at 128 plus 25 at 20),
+> which stays inside the budget.
+>
+> The write **blocks the caller for ~1.4 ms** (836 µs of bits + the 600 µs latch), so it is
+> called from `loop()` and never from an ISR — and the renderer calls it **every 30 ms**, not
+> once per state change, because the floor moves. That is ~5 % of `loop()` forever. It is
+> affordable while `loop()` is empty; when the control loop arrives (§10.1) this has to move
+> off the control path or go non-blocking.
+>
+> **One unverified margin.** The RMT channel is given one memory block — **48 items =
+> 57.6 µs** — and `rmt_write_items()` refills it from its ISR, so a 697-item frame needs that
+> ISR to run every 57.6 µs. Nothing has glitched, but if the *far* end of the strip ever
+> shows a wrong colour under Wi-Fi load, that is the mechanism. The one-argument fix is
+> `RMT_MEM_192` (3 blocks, since `RMT_DEFAULT_ARD_CONFIG_TX` sets `mem_block_num = buffers`,
+> giving 173 µs of slack) — worth testing before trusting, because `rmtInit()` returning
+> NULL costs the LED entirely.
+>
+> The write **blocks the caller for ~830 µs** (230 µs of bits + the 600 µs latch), so it is
+> called from `loop()` and never from an ISR. When the control loop arrives (§10.1) this
+> has to move off the control path or go non-blocking.
 
 ---
 
@@ -331,11 +486,12 @@ pio run -d firmware/brain -t upload       # flash
 pio run -d firmware/brain -t monitor      # serial console (UART0)
 ```
 
-The board boots **silent** — no autoplay. Join the AP (`brain` / `brainpass`, or whatever
-`secrets.h` says) and open `http://192.168.4.1/`, then press a button. The status LED is
-dim blue while idle.
+The board boots **silent** — no autoplay, and the audio stays quiet until a button is
+pressed. Join the AP (`brain` / `brainpass`, or whatever `secrets.h` says) and open
+`http://192.168.4.1/`. The lights come on with the board: head white, tail red, floor
+sweeping (see *The layout* above).
 
-Clean build, zero warnings. As built: **RAM 50 080 B / flash 1 179 153 B** — 35.3 % of the
+Clean build, zero warnings. As built: **RAM 53 220 B / flash 1 207 773 B** — 36.1 % of the
 3.3 MB app partition.
 
 ---

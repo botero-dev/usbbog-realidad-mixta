@@ -35,32 +35,49 @@ uint32_t stream_clients();
 // Most recent measured stream frame rate, in whole frames per second.
 uint32_t fps();
 
-// --- LED / torch on GPIO48 ------------------------------------------------
+// --- the car's lights, on GPIO48 ------------------------------------------
 //
-// GPIO48 is the on-board WS2812 and, through one unbuffered net, the strip's
-// first pixel as well (plan 2.1). Two things want it:
+// GPIO48 drives the on-board WS2812 and, through one unbuffered net, the 29-pixel
+// strip (plan 2.1). The strip is the car's LIGHTING, and its pixels are named groups
+// (head/tail left and right, tail centre, floor) -- see `led_print_layout()`.
 //
-//   * STATUS (the default), which shows the board's state at a glance with
-//     nothing plugged in — the same job the Pico's GP25 LED does for the body,
-//     and one this board cannot otherwise do, because its on-board LED is
-//     addressable rather than a plain indicator:
-//         dim blue   idle, AP up
-//         green      someone is reading /stream
-//         white      audio is playing (wins over green — "is it actually
-//                    playing?" is the question you ask when the amp is silent)
-//   * TORCH: an explicit colour, which turns the status indication OFF until it
-//     is handed back. Without that hand-back, a status update would silently
-//     overwrite whatever the user had set.
+//   * RUN (the BOOT DEFAULT): head lights white and tail lights red, ALWAYS ON at
+//     20/255, with the floor sweeping the hue wheel at the same level.
+//   * TORCH: that same scene with the head lights at 128/255.
+//   * HAZARD: that same scene with the head and tail SIDE lights flashing yellow at
+//     64/255, about 1.25 Hz.
+//   * OFF: every pixel to zero. All lights dark, and it is a STATE rather than a
+//     one-off command so that "the lights are off" is something /status can report
+//     and the page can show -- not something you have to remember.
+//   * CUSTOM: a per-group scene. `?group=<name>&r/g/b` lights one named group, and
+//     the groups COMPOSE rather than replace -- the manual override underneath the
+//     automatic states above.
 //
-// Colours are written with neopixelWrite(), i.e. the RMT peripheral — never
-// PWM. PWM on a WS2812 data line is not "dim", it is corrupted bit timing.
+// What is deliberately NOT here any more: the old status indication (dim blue idle /
+// green streaming / white audio) and the whole-strip rainbow. The lights are on
+// whenever the car is, so the strip can no longer double as a debug indicator -- ask
+// the page or `/status` instead.
+//
+// Colours go out over the **RMT peripheral**, never PWM — PWM on a WS2812 data line
+// is not "dim", it is corrupted bit timing. Not with the core's `neopixelWrite()`
+// either: that sends exactly ONE pixel and the strip needs `kStripLeds` of them. See
+// the note above `strip_show()` in app_httpd.cpp.
+enum class LedMode { Run, Torch, Hazard, Off, Custom };
+
+// Set the lighting state. Takes effect on the next animation tick (<= 30 ms), which
+// is also what repaints it -- there is one renderer and this is not it.
+void led_set_mode(LedMode m);
+
+// Fill the whole strip with one colour, in the Custom state.
 void led_set(uint8_t r, uint8_t g, uint8_t b);
-void led_auto(bool enable);  // true = status mode, false = torch
-bool led_auto_enabled();
 void led_get(uint8_t *r, uint8_t *g, uint8_t *b);
 
-// Non-blocking status update. Call from loop(); it rate-limits itself and only
-// touches the LED when the colour actually changes.
+// Print the 29-pixel layout -- the named groups -- to Serial, FROM the table that
+// led_set_group() uses rather than from a hand-copied string that can drift.
+void led_print_layout();
+
+// Render/refresh the lights. Call from loop(); it rate-limits itself, and it is what
+// animates the floor sweep and the hazard flash.
 void led_task(uint32_t now_ms);
 
 }  // namespace app

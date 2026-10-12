@@ -32,7 +32,7 @@
 
 #include "audio_player.h"
 #include "esp_http_server.h"
-#include "esp32-hal-rgb-led.h"  // neopixelWrite()
+#include "esp32-hal-rmt.h"  // rmtInit/rmtSetTick/rmtWriteBlocking (the strip)
 
 #include "camera_pins.h"
 #include "esp_camera.h"
@@ -64,12 +64,143 @@ constexpr char STREAM_PART[] =
 volatile uint32_t g_stream_clients = 0;
 volatile uint32_t g_fps = 0;
 
-bool g_led_auto = true;  // true = status mode, false = user's torch colour
+// The lights' current state. `LedMode` itself lives in app_httpd.h -- it is the
+// strip's public contract -- and the boot default is Run, the always-on scene, not a
+// demo effect: the car's lights come on with the car.
+LedMode g_led_mode = LedMode::Run;
 uint8_t g_led_r = 0, g_led_g = 0, g_led_b = 0;
-// Deliberately not equal to any real colour, so the first led_apply() always
-// writes. 0,0,0 is a real colour and would be skipped otherwise.
-uint8_t g_applied_r = 1, g_applied_g = 1, g_applied_b = 1;
+// Where the floor's sweep is, in BYTE hue: a full turn is 256, so it wraps with a
+// plain uint8_t add and there is no 360-vs-0 branch to get wrong.
+uint8_t g_floor_hue = 0;
+
+// How many pixels this firmware writes per frame.
+//
+// GPIO48 drives the on-board WS2812 AND the strip -- ONE net, one RMT stream, so
+// both always show the same thing (plan 2.1). The on-board LED is not one of
+// these: it is one more chip listening on the same wire, and it shows pixel 0.
+//
+// 29, not 30: the strip's FIRST pixel is dead -- reverse-polarity damage from
+// 2026-10-12, before the wiring was corrected -- and it is bypassed, so the data
+// lead now feeds the second chip and these 29 are the pixels that still work.
+constexpr int kStripLeds = 29;
+
+// *** THE CEILING: nothing may exceed this, whatever asks for it. ***
+// 128, and it is chosen by the BRIGHTEST thing in the catalogue -- the torch's head
+// lights. This is a SAFETY limit now, not a brightness setting: the per-mode LEVELS
+// further down decide how bright each thing actually is, and this only stops any of
+// them -- or a hand-written `/control?led_r=255` -- from going past.
+//
+// The sequence matters, so record it: this was 20 while the strip was only ever
+// ambient lighting, and 20 has NOT gone away -- it moved from being a global cap to
+// being the ambient level. A global cap cannot express "head at 128, floor at 20".
+//
+// Enforced in led_push() because that is the SINGLE gate every frame from every mode
+// passes through, so no caller, no future mode and no query string gets around it.
+// Max draw, everything on at white: 4 head pixels at 128 (~60 mA) plus 25 at 20
+// (~120 mA) -- about 180 mA, still inside a USB 2.0 port's budget.
+constexpr uint8_t kLedMaxChannel = 128;
+
+// --- the layout: 29 pixels, named ----------------------------------------
+//
+// Labelled by the user, 2026-10-12. The indices are PHYSICAL POSITIONS in the
+// strip's data order -- and index 0 is NOT the strip's first chip: pixel 1 of the
+// strip is dead (reverse-polarity damage) and is bypassed, so firmware index 0
+// lands on its second chip. Wire the strip any other way and every label below
+// moves.
+//
+//   index  0- 1   tail light right
+//   index  2- 5   tail light centre
+//   index  6- 7   tail light left
+//   index  8-24   floor
+//   index 25-26   head light left
+//   index 27-28   head light right
+//
+// Naming these is not documentation, it is API: led_set_group() takes a LedGroup
+// and /control?group=<name> addresses one from a browser. The point of a TABLE
+// rather than six #defines is that the tiling can be checked -- see below.
+enum class LedGroup { TailRight, TailCentre, TailLeft, Floor, HeadLeft, HeadRight };
+
+struct GroupRange {
+  const char *name;  // the /control?group= spelling
+  LedGroup group;
+  uint8_t first;     // first pixel index, inclusive
+  uint8_t count;
+};
+
+constexpr GroupRange kGroups[] = {
+    {"tail_right", LedGroup::TailRight, 0, 2},
+    {"tail_centre", LedGroup::TailCentre, 2, 4},
+    {"tail_left", LedGroup::TailLeft, 6, 2},
+    {"floor", LedGroup::Floor, 8, 17},
+    {"head_left", LedGroup::HeadLeft, 25, 2},
+    {"head_right", LedGroup::HeadRight, 27, 2},
+};
+
+constexpr size_t kGroupCount = sizeof(kGroups) / sizeof(kGroups[0]);
+
+// Every pixel belongs to exactly one group, and the groups cover the strip in
+// order with no gap and no overlap. Checked by the COMPILER rather than by eye: a
+// gap or an overlap here is a lighting bug that would otherwise only show up on
+// the car at night.
+//
+// *** C++11, NOT C++14: single return statements only. ***
+// A loop inside a constexpr body is C++14 ("body of 'constexpr' function not a
+// return-statement") and this core builds with -std=gnu++11 -- the same trap that
+// stopped protocol.h's CRC from compiling at all. Hence recursion, which is also
+// how the CRC there does it.
+constexpr bool groups_tile(size_t i, int expected_first) {
+  return i == kGroupCount
+             ? expected_first == kStripLeds
+             : (kGroups[i].first == expected_first &&
+                groups_tile(i + 1, expected_first + kGroups[i].count));
+}
+static_assert(groups_tile(0, 0),
+              "LED groups must tile 0..kStripLeds-1: no gap, no overlap, no extras");
+
+// THE frame: what the LEDs are showing. The renderer builds it for Run/Torch/Hazard,
+// a group write or a manual colour edits it in Custom, and led_push() sends it.
+uint8_t g_scene[kStripLeds * 3];
+
+// The frame as last sent, so an identical one is not pushed again. The write
+// BLOCKS the caller for ~1.4 ms (see strip_show), and led_task() pushes the
+// status colour every 500 ms whether or not anything changed.
+uint8_t g_applied[kStripLeds * 3];
+bool g_applied_valid = false;
+
 uint32_t g_led_last_ms = 0;
+
+// --- the always-on scene, and the two overrides ----------------------------
+//
+// "Head and tail always on, the floor sweeping" is the car's DEFAULT state (user,
+// 2026-10-12), so none of this is a demo effect. Every level is a fraction of full
+// scale applied through level_channel(), which keeps a colour and a brightness
+// independent: "make the tail red" and "make the tail dimmer" are separate one-line
+// changes instead of a hunt for a literal.
+constexpr uint8_t kAmbientLevel = 20;  // head + tail, always on
+constexpr uint8_t kFloorLevel = 20;    // the floor's sweep
+constexpr uint8_t kHazardLevel = 64;   // the flashing side lights
+constexpr uint8_t kTorchLevel = 128;   // the head lights, torch on
+
+// Head white, tail red -- car-conventional, and stated once so "what colour is the
+// tail?" has exactly one answer.
+constexpr uint8_t kHeadRGB[3] = {255, 255, 255};
+constexpr uint8_t kTailRGB[3] = {255, 0, 0};
+constexpr uint8_t kBlackRGB[3] = {0, 0, 0};
+// Yellow, as asked. Amber (255,160,0) is what a real indicator looks like -- that is
+// a one-line change here if the flash should read as a turn signal.
+constexpr uint8_t kHazardRGB[3] = {255, 255, 0};
+
+// The four groups that flash: the head and tail SIDE lights. The tail centre and the
+// floor are not side lights and keep doing what they were doing.
+constexpr LedGroup kHazardGroups[] = {LedGroup::HeadLeft, LedGroup::HeadRight,
+                                      LedGroup::TailLeft, LedGroup::TailRight};
+constexpr size_t kHazardGroupCount =
+    sizeof(kHazardGroups) / sizeof(kHazardGroups[0]);
+
+// Half a flash period, so the flash runs at ~1.25 Hz -- the rate a hazard flasher
+// actually runs at. Derived from the clock, never counted up, so a late tick cannot
+// make it drift or stick.
+constexpr uint32_t kHazardHalfMs = 400;
 
 // --- frame-size names -----------------------------------------------------
 // Names are nicer in a URL than raw enum values, and the numeric value is
@@ -199,13 +330,280 @@ uint8_t clamp8(int v) {
   return (uint8_t)v;
 }
 
+// The animation tick. 30 ms is a DISPLAY rate: the floor's sweep moves one step per
+// tick, and the hazard flash is sampled from the clock rather than counted, so this
+// only decides how smooth the sweep looks. It also fixes the cost -- every tick ends
+// in a ~1.4 ms blocking RMT write (see strip_show).
+constexpr uint32_t kAnimIntervalMs = 30;
+constexpr uint8_t kRainbowStep = 3;  // 256/3 ticks x 30 ms = about 2.6 s per turn
+
+const char *led_mode_name(LedMode m) {
+  switch (m) {
+    case LedMode::Torch: return "torch";
+    case LedMode::Hazard: return "hazard";
+    case LedMode::Off: return "off";
+    case LedMode::Custom: return "custom";
+    default: return "run";
+  }
+}
+
+// A colour and a brightness, kept independent.
+uint8_t level_channel(uint8_t component, uint8_t level) {
+  return (uint8_t)(((uint16_t)component * level) / 255);
+}
+
+// Hue in BYTE units: 0..255 is one full turn, so there is no wrap at 360 and no
+// float anywhere. Saturation and value are 0..255 too. Six sectors of 43 (43 x 6
+// = 258, so the last sector is one unit short -- invisible at this brightness).
+void hsv_to_rgb(uint8_t h, uint8_t s, uint8_t v, uint8_t *r, uint8_t *g,
+                uint8_t *b) {
+  if (s == 0) {
+    *r = *g = *b = v;
+    return;
+  }
+  const uint8_t sector = (uint8_t)(h / 43);
+  const uint8_t pos = (uint8_t)((h - sector * 43) * 6);  // 0..255 in the sector
+  const uint8_t p = (uint8_t)((v * (255 - s)) / 255);
+  const uint8_t q = (uint8_t)((v * (255 - (s * pos) / 255)) / 255);
+  const uint8_t t = (uint8_t)((v * (255 - (s * (255 - pos)) / 255)) / 255);
+  switch (sector) {
+    case 0: *r = v; *g = t; *b = p; break;
+    case 1: *r = q; *g = v; *b = p; break;
+    case 2: *r = p; *g = v; *b = t; break;
+    case 3: *r = p; *g = q; *b = v; break;
+    case 4: *r = t; *g = p; *b = v; break;
+    default: *r = v; *g = p; *b = q; break;
+  }
+}
+
+// --- the scene: the frame the lights actually show -------------------------
+//
+// Run, Torch and Hazard are THE SAME always-on scene -- head and tail lit, the floor
+// sweeping -- differing only in ONE override. Sharing a single builder rather than
+// copying it per mode is what makes "always on" true by construction: there is no
+// state in which the tail lights can be forgotten, because there is exactly one place
+// they are turned on.
+void scene_set_group(LedGroup which, const uint8_t *rgb, uint8_t level) {
+  for (size_t i = 0; i < kGroupCount; ++i) {
+    if (kGroups[i].group != which) continue;
+    for (uint8_t p = 0; p < kGroups[i].count; ++p) {
+      const int at = (kGroups[i].first + p) * 3;
+      g_scene[at + 0] = level_channel(rgb[0], level);
+      g_scene[at + 1] = level_channel(rgb[1], level);
+      g_scene[at + 2] = level_channel(rgb[2], level);
+    }
+    return;
+  }
+}
+
+// Fill the whole scene with one colour. The renderer never needs this -- it sets the
+// groups individually -- but the manual whole-strip override does.
+void scene_fill(uint8_t r, uint8_t g, uint8_t b) {
+  for (int i = 0; i < kStripLeds; ++i) {
+    g_scene[i * 3 + 0] = r;
+    g_scene[i * 3 + 1] = g;
+    g_scene[i * 3 + 2] = b;
+  }
+}
+
+// The floor: one full turn of hue spread across the group. It writes the pixels
+// itself because each one wants a DIFFERENT hue -- the one group a single colour
+// cannot express.
+//
+// The step is (p * 256) / count and not p * (256 / count). At 17 pixels the two
+// differ by a single hue unit and it would not matter; the reason to use the correct
+// form is that at 29 pixels -- the whole strip, as it was before the groups existed --
+// the naive one steps by floor(256/29) = 8, spans only 224, and leaves a 32-unit seam
+// against a step of 8, which IS visible. Right once, and it cannot be wrong for a
+// group of a different length.
+void scene_floor_sweep() {
+  for (size_t i = 0; i < kGroupCount; ++i) {
+    if (kGroups[i].group != LedGroup::Floor) continue;
+    const GroupRange &gr = kGroups[i];
+    for (uint8_t p = 0; p < gr.count; ++p) {
+      uint8_t r = 0, g = 0, b = 0;
+      hsv_to_rgb((uint8_t)(g_floor_hue + (p * 256) / gr.count), 255, kFloorLevel,
+                 &r, &g, &b);
+      const int at = (gr.first + p) * 3;
+      g_scene[at + 0] = r;
+      g_scene[at + 1] = g;
+      g_scene[at + 2] = b;
+    }
+    return;
+  }
+}
+
+void scene_render(uint32_t now_ms) {
+  // OFF: every pixel to zero. It is rendered on the normal tick rather than sent once
+  // and then left, which costs a 1.4 ms write every 30 ms to hold a dark strip -- and
+  // buys back the ability to RECOVER. A strip that loses a frame (a marginal data line,
+  // a supply dip) is repainted 30 ms later instead of staying wrong until the next
+  // command. With the strip's data level still unverified, that matters more than the
+  // 5 % of an otherwise empty loop().
+  if (g_led_mode == LedMode::Off) {
+    scene_fill(0, 0, 0);
+    return;
+  }
+
+  // Head and tail: always on. These five lines are the whole promise.
+  scene_set_group(LedGroup::HeadLeft, kHeadRGB, kAmbientLevel);
+  scene_set_group(LedGroup::HeadRight, kHeadRGB, kAmbientLevel);
+  scene_set_group(LedGroup::TailLeft, kTailRGB, kAmbientLevel);
+  scene_set_group(LedGroup::TailCentre, kTailRGB, kAmbientLevel);
+  scene_set_group(LedGroup::TailRight, kTailRGB, kAmbientLevel);
+
+  if (g_led_mode == LedMode::Torch) {
+    scene_set_group(LedGroup::HeadLeft, kHeadRGB, kTorchLevel);
+    scene_set_group(LedGroup::HeadRight, kHeadRGB, kTorchLevel);
+  }
+
+  if (g_led_mode == LedMode::Hazard) {
+    // The flash is derived from the CLOCK, not toggled from a counter, so a missed or
+    // late tick cannot make it drift or stick on. Off means OFF: a hazard flashes, so
+    // the side lights go dark for half the period rather than falling back to their
+    // running lights -- falling back would read as a colour change, not a flash.
+    const bool on = ((now_ms / kHazardHalfMs) & 1u) == 0;
+    for (size_t i = 0; i < kHazardGroupCount; ++i) {
+      if (on) {
+        scene_set_group(kHazardGroups[i], kHazardRGB, kHazardLevel);
+      } else {
+        scene_set_group(kHazardGroups[i], kBlackRGB, 255);  // black at any level
+      }
+    }
+  }
+
+  scene_floor_sweep();
+}
+
+// --- the strip's data, N pixels at a time ---------------------------------
+//
+// *** WHY THIS IS NO LONGER neopixelWrite(). ***
+// The core's neopixelWrite() sends exactly ONE pixel and core 2.0.17 has no
+// public N-pixel API. One pixel was enough while the only learner was the
+// on-board WS2812, but it cannot light a strip: every pixel past the first keeps
+// whatever it last latched, so the strip shows one LED and then stale colour.
+//
+// So this drives RMT through the SAME wrapper the core itself uses
+// (esp32-hal-rmt.h) with the SAME bit timing it uses -- 100 ns per tick, T0H
+// 0.4 us, T1H 0.8 us, taken straight from esp32-hal-rgb-led.c -- so no timing
+// here is a new guess. rmt_write_items() takes any length ("send waveform with
+// any length", driver/rmt.h) and refills the channel's 48-word memory from this
+// buffer in its ISR, which is the only reason 8 pixels (192 items) fit at all.
+//
+// Three consequences that are not optional:
+//   * the item buffer is STATIC -- the driver points at it until the last bit has
+//     gone out, so it must not be a stack local;
+//   * rmtWriteBlocking() BLOCKS for ~1.4 ms (836 us of bits at 29 pixels + 600 us
+//     of latch), so this may never be called from an ISR (plan 10.1 says the same).
+//     That block grows with the pixel count and is no longer negligible.
+//   * a missing latch is invisible -- a frame with no gap after it is a frame
+//     the strips never accept.
+constexpr uint16_t kLatchTicks = 3000;  // x 100 ns = 300 us, held twice = 600 us
+
+rmt_data_t g_strip_items[kStripLeds * 24 + 1];  // 697 items = 2788 B of .bss
+rmt_obj_t *g_strip = nullptr;
+
+// One WS2812 bit. A 1 is a LONG high, a 0 a short one; both are 1.2 us end to
+// end, because the strip measures the HIGH time, not the duty cycle.
+void strip_bit(rmt_data_t *it, bool one) {
+  if (one) {
+    it->level0 = 1; it->duration0 = 8;  // 0.8 us high
+    it->level1 = 0; it->duration1 = 4;  // 0.4 us low
+  } else {
+    it->level0 = 1; it->duration0 = 4;  // 0.4 us high
+    it->level1 = 0; it->duration1 = 8;  // 0.8 us low
+  }
+}
+
+// Send `n` RGB pixels. GRB is the wire order, and that swap is why a straight
+// RGB write shows red and green exchanged.
+bool strip_show(const uint8_t *rgb, int n) {
+  if (n > kStripLeds) n = kStripLeds;
+  if (n <= 0) return true;
+
+  if (!g_strip) {
+    g_strip = rmtInit(PIN_LED_STRIP, RMT_TX_MODE, RMT_MEM_64);
+    if (!g_strip) {
+      // Once, not per frame: a silent failure here looks exactly like a dead LED,
+      // and a retry every 30 ms would bury the log in it.
+      Serial.println("[led] RMT init FAILED -- no LED output this boot");
+      return false;
+    }
+    rmtSetTick(g_strip, 100);  // 100 ns per tick, the core's own value
+  }
+
+  rmt_data_t *it = g_strip_items;
+  for (int i = 0; i < n; ++i) {
+    const uint8_t grb[3] = {rgb[i * 3 + 1], rgb[i * 3 + 0], rgb[i * 3 + 2]};
+    for (int ch = 0; ch < 3; ++ch) {
+      for (int bit = 7; bit >= 0; --bit) strip_bit(it++, (grb[ch] >> bit) & 1);
+    }
+  }
+
+  // The latch. An explicit LOW after the frame, because how long the caller
+  // waits before the next frame is not something the strip can be told about --
+  // and the two variants disagree about what counts as a gap (the classic needs
+  // >= 50 us, the ECO/V5 >= 280 us). 600 us satisfies both and costs nothing at
+  // a 30 ms update rate.
+  //
+  // Anything left on a strip LONGER than kStripLeds is simply not addressed:
+  // those pixels keep their last value rather than going dark.
+  it->level0 = 0; it->duration0 = kLatchTicks;
+  it->level1 = 0; it->duration1 = kLatchTicks;
+  ++it;
+
+  return rmtWriteBlocking(g_strip, g_strip_items, (size_t)(it - g_strip_items));
+}
+
+// Push one frame, skipping it if it is byte-identical to the last. That guard is
+// load-bearing rather than an optimisation: led_task() pushes the status colour
+// every 500 ms regardless, and every push blocks for ~830 us.
+bool led_push(const uint8_t *rgb, int n) {
+  if (n > kStripLeds) n = kStripLeds;
+  if (n <= 0) return true;
+
+  // Cap FIRST, then compare and send, so the dedupe is on what actually goes out
+  // and the cap cannot be bypassed by any caller -- see kLedMaxChannel.
+  uint8_t frame[kStripLeds * 3];
+  const size_t bytes = (size_t)n * 3;
+  for (size_t i = 0; i < bytes; ++i) {
+    frame[i] = (rgb[i] > kLedMaxChannel) ? kLedMaxChannel : rgb[i];
+  }
+
+  if (g_applied_valid && memcmp(g_applied, frame, bytes) == 0) return true;
+  const bool ok = strip_show(frame, n);
+  memcpy(g_applied, frame, bytes);
+  g_applied_valid = true;
+  return ok;
+}
+
+// One colour across the whole strip. This is the MANUAL override, so it lands in
+// Custom -- the state the renderer deliberately leaves alone.
 void led_apply(uint8_t r, uint8_t g, uint8_t b) {
-  if (r == g_applied_r && g == g_applied_g && b == g_applied_b) return;
-  g_applied_r = r;
-  g_applied_g = g;
-  g_applied_b = b;
-  // RMT, never PWM. See app_httpd.h.
-  neopixelWrite(PIN_LED_STRIP, r, g, b);
+  scene_fill(r, g, b);
+  g_led_mode = LedMode::Custom;
+  led_push(g_scene, kStripLeds);
+}
+
+// --- groups ---------------------------------------------------------------
+bool led_group_parse(const char *name, LedGroup *out) {
+  for (size_t i = 0; i < kGroupCount; ++i) {
+    if (strcmp(name, kGroups[i].name) == 0) {
+      *out = kGroups[i].group;
+      return true;
+    }
+  }
+  return false;
+}
+
+// Light ONE group and switch to Custom, where the scene is the display. Only that
+// group's pixels are written, so the groups COMPOSE rather than replace: set the
+// tail, then the head, then the floor, and all three stay set.
+bool led_set_group(LedGroup which, uint8_t r, uint8_t g, uint8_t b) {
+  const uint8_t rgb[3] = {r, g, b};
+  scene_set_group(which, rgb, 255);  // level 255 writes the components as given
+  g_led_mode = LedMode::Custom;
+  return led_push(g_scene, kStripLeds);
 }
 
 // --- handlers -------------------------------------------------------------
@@ -289,6 +687,13 @@ will make these buttons lie. Wheels off the ground for the first press.</p>
 <button class="lv" data-vol="100" onclick="ask('/control?vol=100')">high</button>
 <button class="lv" data-vol="200" onclick="ask('/control?vol=200')">very high</button>
 </p>
+<p class="lbl">lights &mdash; <b id="ledstat">run</b></p>
+<p>
+<button class="lv" id="ledrun" onclick="ask('/control?mode=run')">run</button>
+<button class="lv" id="ledtor" onclick="ask('/control?mode=torch')">torch</button>
+<button class="lv" id="ledhaz" onclick="ask('/control?mode=hazard')">hazard</button>
+<button class="lv" id="ledoff" onclick="ask('/control?mode=off')">off</button>
+</p>
 <script>
 // The stream lives on its OWN PORT, because it gets its own server task: its
 // handler never returns while a client is watching, and one httpd task can serve
@@ -331,7 +736,20 @@ function show(j){
     var mine = parseInt(bs[i].getAttribute('data-vol'),10);
     bs[i].className = (mine === m) ? 'lv on' : 'lv';
   }
+
+  // The lighting state is the board's to decide, so every reply that carries it wins.
+  // These buttons are INDICATORS, not toggles: none of them assumes a state, which is
+  // also what lets a mode set by curl show up correctly on the page.
+  if(j.led_mode !== undefined){
+    var lm = j.led_mode;
+    document.getElementById('ledrun').className = (lm === 'run') ? 'lv on' : 'lv';
+    document.getElementById('ledtor').className = (lm === 'torch') ? 'lv on' : 'lv';
+    document.getElementById('ledhaz').className = (lm === 'hazard') ? 'lv on' : 'lv';
+    document.getElementById('ledoff').className = (lm === 'off') ? 'lv on' : 'lv';
+    document.getElementById('ledstat').textContent = lm;
+  }
 }
+
 fetch('/status', {cache:'no-store'})
   .then(function(r){return r.json();})
   .then(function(j){ show(j); showLink(j); })
@@ -614,7 +1032,7 @@ esp_err_t send_status_json(httpd_req_t *req) {
       "\"framesize\":\"%s\",\"quality\":%d,\"brightness\":%d,\"contrast\":%d,"
       "\"saturation\":%d,\"hmirror\":%d,\"vflip\":%d,"
       "\"audio\":\"%s\",\"sample_rate\":%u,\"volume_milli\":%u,"
-      "\"led_auto\":%s,\"led\":[%u,%u,%u],",
+      "\"led_mode\":\"%s\",\"led\":[%u,%u,%u],",
       (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getFreePsram(),
       (unsigned)WiFi.softAPgetStationNum(), (unsigned)g_stream_clients,
       (unsigned)g_fps,
@@ -624,7 +1042,7 @@ esp_err_t send_status_json(httpd_req_t *req) {
       s ? (int)s->status.hmirror : 0, s ? (int)s->status.vflip : 0,
       audio_now_playing(), (unsigned)audio_sample_rate(),
       (unsigned)(audio_volume() * 1000.0f + 0.5f),
-      g_led_auto ? "true" : "false", (unsigned)g_led_r, (unsigned)g_led_g,
+      led_mode_name(g_led_mode), (unsigned)g_led_r, (unsigned)g_led_g,
       (unsigned)g_led_b);
 
   // A Pico that has never replied has no age. `null` is honest and parses; the
@@ -743,8 +1161,17 @@ esp_err_t play_handler(httpd_req_t *req) {
 //   quality=0..63              lower = better quality, bigger frames
 //   brightness, contrast, saturation = -2..2
 //   hmirror, vflip = 0|1
-//   led_r, led_g, led_b = 0..255   sets the torch and turns led_auto OFF
-//   led_auto = 0|1                 hands the LED back to status indication
+//   mode = run|torch|hazard|off the car's lighting state (see app_httpd.h)
+//   group = <name> + r,g,b = 0..255  lights ONE group and opens the Custom mode
+//   led_r, led_g, led_b = 0..255   fills the whole strip (also Custom)
+//
+// A request that carries `group` is ALWAYS a group write and nothing else: it is
+// handled and answered on its own, so `group` and `led_r/g/b` can never be confused
+// for each other even though they mean similar things. Missing r/g/b in a group write
+// are 0.
+//
+// `mode` is applied FIRST, so a request carrying both it and a colour ends up on the
+// explicit lighting state rather than on whatever the colour implied.
 //
 // It always answers with the same JSON as /status, so a caller can see the
 // result of what it just set — including when the sensor silently refused.
@@ -780,20 +1207,59 @@ esp_err_t control_handler(httpd_req_t *req) {
   // (Accepted on /play too -- see there.)
   apply_volume_param(params);
 
+  // A group write is its own command shape: it addresses part of the strip and
+  // opens the Custom mode, so it is handled and answered on its own rather than
+  // falling through to the whole-strip colour below.
+  char gname[24];
+  if (param_str(params, "group", gname, sizeof(gname))) {
+    LedGroup which;
+    if (!led_group_parse(gname, &which)) {
+      return httpd_resp_send_err(
+          req, HTTPD_400_BAD_REQUEST,
+          "{\"error\":\"unknown group -- tail_right|tail_centre|tail_left|"
+          "floor|head_left|head_right\"}");
+    }
+    int gr = 0, gg = 0, gb = 0;
+    param_int(params, "r", &gr);
+    param_int(params, "g", &gg);
+    param_int(params, "b", &gb);
+    // Logged like /play and /drive: "the LED did not change" has to split into
+    // never arrived vs arrived with the wrong group name.
+    Serial.printf("[http] /control group=%s r=%d g=%d b=%d\n", gname, gr, gg, gb);
+    led_set_group(which, clamp8(gr), clamp8(gg), clamp8(gb));
+    return send_status_json(req);
+  }
+
+  // The lighting state first, so a request carrying both a mode and a colour ends up
+  // on the mode.
+  if (param_str(params, "mode", v, sizeof(v))) {
+    if (strcmp(v, "run") == 0) {
+      led_set_mode(LedMode::Run);
+    } else if (strcmp(v, "torch") == 0) {
+      led_set_mode(LedMode::Torch);
+    } else if (strcmp(v, "hazard") == 0) {
+      led_set_mode(LedMode::Hazard);
+    } else if (strcmp(v, "off") == 0) {
+      led_set_mode(LedMode::Off);
+    } else {
+      return httpd_resp_send_err(
+          req, HTTPD_400_BAD_REQUEST,
+          "{\"error\":\"mode must be run, torch, hazard or off\"}");
+    }
+    // Logged like /play and /drive, for the same reason: "the lights did nothing"
+    // has to split into never arrived vs arrived with a bad value.
+    Serial.printf("[http] /control mode=%s\n", v);
+  }
+
   bool touched_led = false;
   if (param_int(params, "led_r", &n)) { g_led_r = clamp8(n); touched_led = true; }
   if (param_int(params, "led_g", &n)) { g_led_g = clamp8(n); touched_led = true; }
   if (param_int(params, "led_b", &n)) { g_led_b = clamp8(n); touched_led = true; }
 
   if (touched_led) {
-    // Setting a colour IS the request for a torch. Otherwise the 500 ms status
-    // update would wipe it out and the endpoint would look broken.
-    g_led_auto = false;
-    led_apply(g_led_r, g_led_g, g_led_b);
-  }
-
-  if (param_int(params, "led_auto", &n)) {
-    g_led_auto = (n != 0);
+    // An explicit colour IS the manual override, so it lands in Custom and stays
+    // there: nothing repaints it until a mode is asked for again.
+    led_set(g_led_r, g_led_g, g_led_b);
   }
 
   return send_status_json(req);
@@ -1036,12 +1502,24 @@ void led_set(uint8_t r, uint8_t g, uint8_t b) {
   g_led_r = r;
   g_led_g = g;
   g_led_b = b;
-  g_led_auto = false;
   led_apply(r, g, b);
 }
 
-void led_auto(bool enable) { g_led_auto = enable; }
-bool led_auto_enabled() { return g_led_auto; }
+// Changing state does NOT repaint here: led_task()'s renderer is the only thing that
+// knows how to build a frame, and for Run/Torch/Hazard it runs within 30 ms. Doing it
+// in two places is how the two would drift apart.
+void led_set_mode(LedMode m) { g_led_mode = m; }
+
+// Print the layout from kGroups, so the boot banner cannot drift from the table
+// that led_set_group() actually uses.
+void led_print_layout() {
+  Serial.printf("[led] %d pixels:", kStripLeds);
+  for (size_t i = 0; i < kGroupCount; ++i) {
+    Serial.printf("  %s %u-%u", kGroups[i].name, (unsigned)kGroups[i].first,
+                  (unsigned)(kGroups[i].first + kGroups[i].count - 1));
+  }
+  Serial.println();
+}
 
 void led_get(uint8_t *r, uint8_t *g, uint8_t *b) {
   if (r) *r = g_led_r;
@@ -1050,23 +1528,17 @@ void led_get(uint8_t *r, uint8_t *g, uint8_t *b) {
 }
 
 void led_task(uint32_t now_ms) {
-  if (!g_led_auto) return;
-  if (now_ms - g_led_last_ms < 500) return;
+  // Custom is the one state the firmware does NOT animate: the scene is whatever the
+  // last group write made it, and rebuilding it here would throw the user's work away
+  // 30 ms after they did it.
+  if (g_led_mode == LedMode::Custom) return;
+
+  if (now_ms - g_led_last_ms < kAnimIntervalMs) return;
   g_led_last_ms = now_ms;
 
-  // Dim on purpose. The on-board WS2812 is bright enough at 30/255 to read
-  // across a room, and every millivolt here is shared with the camera, the radio
-  // and the amp (plan 7.1's LM2596 brownout argument).
-  //
-  // Audio wins over streaming: "is it actually playing?" is the question you ask
-  // when the amp is silent, and the stream is visible on the screen anyway.
-  if (audio_busy()) {
-    led_apply(40, 40, 40);  // white: a sound is playing
-  } else if (g_stream_clients > 0) {
-    led_apply(0, 48, 0);  // green: someone is watching the stream
-  } else {
-    led_apply(0, 0, 48);  // dim blue: AP up, nobody watching, silent
-  }
+  g_floor_hue = (uint8_t)(g_floor_hue + kRainbowStep);
+  scene_render(now_ms);
+  led_push(g_scene, kStripLeds);
 }
 
 }  // namespace app

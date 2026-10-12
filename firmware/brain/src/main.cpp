@@ -371,7 +371,7 @@ void setup() {
   Serial.println("  :80     /capture   one JPEG snapshot");
   Serial.println("  :80     /status    JSON: heap, psram, clients, fps, audio, volume");
   Serial.println("  :80     /imu       JSON: accel, gyro, tilt, temp, seq (page polls 15 Hz)");
-  Serial.println("  :80     /control   GET|POST sensor settings, LED colour, ?vol=0..1000");
+  Serial.println("  :80     /control   GET|POST sensor, lights (mode|group|colour), ?vol=..");
   Serial.println("  :80     /play      GET|POST ?src=beeps|clip[&vol=0..1000]  (non-blocking)");
   Serial.println("  :80     /drive     GET|POST the motors: ?th=..&fr=..&lr=.. (per-mille)");
   Serial.println("  :80     /stop      GET|POST ?mode=brake|coast|disable  (brake by default)");
@@ -389,8 +389,11 @@ void setup() {
   Serial.printf("         curl 'http://%s/control?framesize=qvga'\n",
                 WiFi.softAPIP().toString().c_str());
   Serial.println();
-  Serial.println("[led] dim blue = idle, green = streaming, white = playing audio.");
-  Serial.println("      Setting a colour turns status mode off until ?led_auto=1.");
+  Serial.println("[led] lights: head white + tail red at 20/255, floor sweeping.");
+  Serial.println("      ?mode=torch = head 128/255, ?mode=hazard = side lights flash,");
+  Serial.println("      ?mode=off = all dark, ?mode=run = back.");
+  Serial.println("      ?group=<name>&r/g/b = one group. Layout:");
+  app::led_print_layout();
   Serial.println();
 #endif  // !BRAIN_NO_RADIO
 }
