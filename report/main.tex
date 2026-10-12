@@ -2,12 +2,18 @@
 \hyphenation{op-tical net-works semi-conduc-tor}
 \usepackage[spanish]{babel}
 \usepackage{graphicx}
+% \figsafe{archivo}{ancho}: inserta la imagen si el archivo existe; si no, muestra
+% un recuadro de "figura pendiente" en vez de abortar la compilacion.
+\newcommand{\figsafe}[2]{%
+  \IfFileExists{#1}{\includegraphics[width=#2]{#1}}%
+  {\fbox{\parbox[c][2.5cm][c]{0.8\linewidth}{\centering\small Figura pendiente: \texttt{\detokenize{#1}}}}}%
+}
 \usepackage{amsmath}
 \usepackage{hyperref}
 \usepackage{float}
 
 \begin{document}
-\title{DISEÑO Y ANÁLISIS DE UN VEHÍCULO RC AUTÓNOMO - ENTREGABLE 1}
+\title{DISEÑO Y ANÁLISIS DE UN VEHÍCULO RADIOCONTROL CON VISIÓN, AUDIO Y ORIENTACION}
 \author{Andrés~Botero, Jade~Moreno, Sofía~Reina and~Vivi~Delgado}% <-this % stops a space
 
 
@@ -21,12 +27,12 @@
 \maketitle
 
 \begin{abstract}
-Se muestra el diseño electromecánico y el análisis cuantitativo de un vehículo a control remoto inspirado en el personaje Rayo McQueen, construido sobre un chasis de traccióna a cuatro ruedas (4WD) con cuatro motorreductores DC, dos controladores de puente H TB6612FNG y un microcontrolador ESP32. Se especifican el chasis, la tracción, los motores y los puentes H tipo MOSFET, la arquitectura de alimentación aislada mediante un regulador LM2596 para la potencia y un módulo dual para la lógica, el cableado y el firmware en C/C++ de tipo avance-giro-detención, sin control continuo ni sensores. Se explica el análisis cuantitativo de fuerza, torque, velocidad, relación de transmisión, Ley de Ohm y la corriente de arranque, contrastando los cálculos teóricos de requerimientos mecánicos con la validación experimental del prototipo funcional.
+Se presenta el diseño y la implementación de un vehículo a control remoto inspirado en el personaje Rayo McQueen, construido sobre un chasis de tracción a las cuatro ruedas (4WD) con cuatro motorreductores DC y dos controladores de puente H TB6612FNG. El control se reparte entre dos microcontroladores: un ESP32-S3 que actúa como cerebro (red Wi-Fi, cámara, audio, sensor de movimiento y control del vehículo) y un RP2040 que actúa como cuerpo (generación de las señales PWM y de dirección, con un vigilante de comunicación). Se describe la alimentación de los diferentes modulos, el protocolo de comunicación entre ambos microcontroladores y una interfaz de usuario basada en HTTP. Además, se desarrolla el análisis cuantitativo de fuerza, torque, velocidad, relación de transmisión, Ley de Ohm y corriente de arranque, y se contrastan los cálculos teóricos con la validación experimental de cada subsistema del prototipo.
 \end{abstract}
 
 % Note that keywords are not normally used for peerreview papers.
 \begin{IEEEkeywords}
-Microcontrolador ESP32, Ley de Ohm, Motorreductor DC, Puente H MOSFET, Relación de transmisión, Torque, Vehículo RC.
+Vehículo RC, ESP32-S3, RP2040, Wi-Fi, HTTP, Cámara, Unidad de medición inercial, PWM, Puente H.
 \end{IEEEkeywords}
 
 
@@ -38,13 +44,14 @@ Microcontrolador ESP32, Ley de Ohm, Motorreductor DC, Puente H MOSFET, Relación
 \section{Objetivos}
 
 \subsection{Objetivo general}
-Desarrollar un vehículo a control remoto aplicando los conceptos básicos de mecánica, electrónica y programación.
+Desarrollar un vehículo a control remoto que integre el control de los motores, la transmisión de video, el audio y la medición inercial, aplicando conceptos de mecánica, electrónica y programación embebida.
 
 \subsection{Objetivos específicos}
 \begin{itemize}
-    \item Construir un prototipo funcional capaz de ejecutar una secuencia autónoma simple (avanzar, girar, detenerse) sin retroalimentación de sensores ni de lazo de control continuo.
+    \item Construir un prototipo funcional con tracción a las cuatro ruedas, gobernable desde una interfaz de red.
+    \item Implementar el firmware de los dos microcontroladores y la comunicación entre ellos, incluyendo una condición de seguridad ante la pérdida de comunicación.
+    \item Validar experimentalmente la alimentación, el control de los motores y los periféricos de entrada y salida (cámara, audio y sensor de movimiento).
     \item Realizar el análisis cuantitativo completo de las magnitudes mecánicas y eléctricas involucradas.
-    \item Implementar un firmware estructurado en C/C++ que gestione el control de los motores mediante PWM, garantizando la ejecución correcta de la secuencia de movimiento.
 \end{itemize}
 
 \section{Marco Teórico}
@@ -67,7 +74,7 @@ La relación de transmisión N (o"gear ratio") relaciona la velocidad agular del
 N = \frac{\omega_{motor}}{\omega_{salida}} = \frac{\tau_{salida}}{\tau_{motor}} \quad \text{(idealmente, sin pérdidas)}
 \end{equation}
 
-En la práctica existe una eficiencia mecánica $\eta<1$ por fricción en los engranajes, de modo que el torque de salida real es \cite{norton}:
+En la práctica existe una eficiencia mecánica $\eta<1$ por fricción en los engranajes, por lo que el torque de salida real es \cite{norton}:
 \begin{equation}
 \tau_{salida} = N \cdot \tau_{motor} \cdot \eta
 \end{equation}
@@ -114,10 +121,10 @@ Existen dos formas de organizar la red:
 
 \begin{itemize}
 \item \textbf{Modo infraestructura:} el dispositivo se conecta a un punto de acceso ya existente, como el \emph{router} de una casa.
-\item \textbf{Modo punto de acceso (AP o \emph{SoftAP}):} el propio dispositivo crea la red y actúa como punto de acceso. El vehículo queda así como el \emph{router} de su propia red y entrega automáticamente una dirección a cada equipo que se conecta, de modo que un teléfono o un computador se enlazan directamente con él sin depender de infraestructura externa.
+\item \textbf{Modo punto de acceso (AP o \emph{SoftAP}):} el propio dispositivo crea la red y actúa como punto de acceso. El vehículo queda así como el \emph{router} de su propia red y entrega automáticamente una dirección a cada equipo que se conecta, así que un teléfono o un computador se conectan directamente con él sin depender de infraestructura externa.
 \end{itemize}
 
-Se eligió el modo punto de acceso porque en campo resulta más práctico que el propio vehículo cree la red, y porque toda la comunicación ocurre entre el cliente y la placa, con la red aislada de Internet. La red se protege con una contraseña (WPA2) y el acceso se controla desde la propia placa.
+Se eligió el modo punto de acceso porque en campo es más práctico que el propio vehículo cree la red, y porque toda la comunicación ocurre entre el cliente y la placa, con la red aislada de Internet. La red se protege con una contraseña (WPA2) y el acceso se controla desde la propia placa.
 
 \subsection{Modelo TCP/IP}
 
@@ -125,12 +132,12 @@ Las redes funcionan por capas, y TCP/IP es el conjunto de protocolos que hace po
 
 \begin{itemize}
 \item \textbf{TCP} (\emph{Transmission Control Protocol}) garantiza que todo llegue: abre una conexión entre los dos extremos y se asegura de que los datos arriben completos y en orden, reenviando lo que se pierda.
-\item \textbf{UDP} (\emph{User Datagram Protocol}) es más simple: envía cada mensaje por su cuenta, sin abrir antes una conexión ni confirmar que llegó, de modo que puede perderse o llegar desordenado \cite{rfc768}.
+\item \textbf{UDP} (\emph{User Datagram Protocol}) es más simple: envía cada mensaje por su cuenta, sin abrir antes una conexión ni confirmar que llegó, así que puede perderse o llegar desordenado \cite{rfc768}.
 \end{itemize}
 
-Para la transmisión en tiempo real, UDP tiene una ventaja clara. Al no esperar confirmaciones ni reenviar lo perdido, mantiene el retardo bajo y constante; TCP, en cambio, puede frenar todo lo que viene detrás de un paquete perdido hasta que lo recupera, de modo que la imagen se queda un instante congelada. En video o en datos en vivo esto importa mucho: un fotograma que llega tarde ya pierde su utilidad, así que lo práctico es descartarlo y dejar paso al siguiente.
+Para la transmisión en tiempo real, UDP tiene una ventaja clara. Al no esperar confirmaciones ni reenviar lo perdido, mantiene el retardo bajo y constante; TCP, en cambio, puede frenar todo lo que viene detrás de un paquete perdido hasta que lo recupera, así que la imagen se congela un momento. En video o en datos en vivo esto importa mucho: un cuadro que llega tarde ya pierde su utilidad, así que lo práctico es descartarlo y dejar paso al siguiente.
 
-En este proyecto, sin embargo, se optó por TCP por comodidad: HTTP ---el protocolo que se usa para la página y los comandos--- funciona sobre TCP, lo que permite emplear un servidor web estándar y un cliente tan simple como un navegador, a cambio de un retardo algo mayor. UDP queda como una mejora natural si más adelante se quiere reducir el retardo del video. Como opción a futuro, \textbf{WebRTC} (\emph{Web Real-Time Communication}) es el estándar pensado justo para eso: envía audio y video en tiempo real sobre UDP, ya incorpora su propio cifrado y control del tráfico, y los navegadores lo soportan de forma nativa \cite{rfc8825}. Adoptarlo reduciría notablemente el retardo del video frente a MJPEG sobre HTTP, a costa de un servidor más complejo.
+En este proyecto, sin embargo, se optó por TCP por comodidad: HTTP ---el protocolo que se usa para la página y los comandos--- funciona sobre TCP, lo que permite emplear un servidor web estándar y un cliente tan simple como un navegador, a cambio de un retardo algo mayor. UDP queda como una mejora natural si más adelante se quiere reducir el retardo del video. Como opción a futuro, \textbf{WebRTC} (\emph{Web Real-Time Communication}) es el estándar pensado precisamente para eso: envía audio y video en tiempo real sobre UDP, ya incorpora su propio cifrado y control del tráfico, y los navegadores lo soportan de manera nativa \cite{rfc8825}. Adoptarlo reduciría notablemente el retardo del video frente a MJPEG sobre HTTP, a cambio de un servidor más complejo.
 
 En resumen, sobre esta base funcionan los protocolos de aplicación; en este proyecto, HTTP. Cuando un cliente pide una página o envía un comando, la placa se encarga de que los datos viajen y el protocolo de aplicación solo interpreta el contenido, sin que el usuario tenga que preocuparse por direcciones ni por datos perdidos.
 
@@ -138,11 +145,11 @@ En resumen, sobre esta base funcionan los protocolos de aplicación; en este pro
 
 HTTP (\emph{Hypertext Transfer Protocol}) es el protocolo que usan las páginas web: el cliente pide algo y el servidor responde \cite{rfc9110}. Trabaja \textbf{sin estado}: cada petición se responde independientemente, así que el cliente incluye en ella todo lo necesario. Una petición indica qué se quiere hacer (el método) y sobre qué se quiere actuar (una dirección), y el servidor contesta con un resultado y su contenido.
 
-Los métodos habituales son \texttt{GET}, para pedir información sin cambiarla, y \texttt{POST}, para ejecutar una acción o enviar datos. Esta separación tiene una razón práctica: las acciones con efecto real ---reproducir un sonido, mover los motores--- se envían con \texttt{POST}, de modo que ningún intermediario pueda repetirlas sin querer a partir de una copia guardada. La respuesta incluye un código que resume el resultado (todo bien, error del cliente o error del servidor) y un tipo de contenido que dice qué se está enviando: HTML para la página de control, JSON para los datos de estado o JPEG para una fotografía de la cámara.
+Los métodos habituales son \texttt{GET}, para pedir información sin cambiarla, y \texttt{POST}, para ejecutar una acción o enviar datos. Esta separación tiene una razón práctica: las acciones con efecto real ---reproducir un sonido, mover los motores--- se envían con \texttt{POST}, así que ningún intermediario pueda repetirlas por accidente desde una copia guardada. La respuesta incluye un código que resume el resultado (todo bien, error del cliente o error del servidor) y un tipo de contenido que dice qué se está enviando: HTML para la página de control, JSON para los datos de estado o JPEG para una fotografía de la cámara.
 
 El estilo REST organiza la aplicación como un conjunto de direcciones que se consultan y se modifican con esos mismos métodos \cite{fielding}. La placa expone así direcciones como \texttt{/status}, \texttt{/play}, \texttt{/control}, \texttt{/drive} y \texttt{/stop}, que el cliente consulta por HTTP.
 
-Por último, el video en vivo se sirve como \emph{MJPEG}: HTTP deja abierta una única respuesta por la que van llegando los fotogramas uno tras otro \cite{rfc2046}. Como esa respuesta queda ocupada mientras alguien mira el video, se atiende en su propio puerto para no bloquear el resto de la aplicación.
+Por último, el video en vivo se sirve como \emph{MJPEG}: HTTP deja abierta una única respuesta por la que van llegando los cuadros uno tras otro \cite{rfc2046}. Como esa respuesta queda ocupada mientras alguien mira el video, se atiende en su propio puerto para no bloquear el resto de la aplicación.
 
 \subsection{Conexiones serie: UART, I\textsuperscript{2}C e I\textsuperscript{2}S}
 
@@ -150,7 +157,7 @@ Dentro del vehículo, los periféricos se comunican por cables, y cada uno usa u
 
 \begin{itemize}
 \item \textbf{UART} (\emph{Universal Asynchronous Receiver--Transmitter}) es una conexión directa entre dos puntos en la que ambos acuerdan de antemano la velocidad, sin compartir una señal de reloj. Se emplea entre el cerebro y el cuerpo.
-\item \textbf{I\textsuperscript{2}C} (bus de dos cables) permite conectar varios dispositivos compartiendo las mismas dos líneas, y cada uno responde a una dirección propia \cite{i2c}. Se usa para el sensor de inercia, y en este proyecto se comprobó que solo resulta fiable a la velocidad estándar de 100 kHz.
+\item \textbf{I\textsuperscript{2}C} (bus de dos cables) permite conectar varios dispositivos compartiendo las mismas dos líneas, y cada uno responde a una dirección propia \cite{i2c}. Se usa para el sensor de inercia, y en este proyecto se comprobó que solo es fiable a la velocidad estándar de 100 kHz.
 \item \textbf{I\textsuperscript{2}S} es la conexión de audio de tres cables ---uno de reloj, uno de sincronía y uno de datos--- que lleva el sonido hasta el convertidor de digital a analógico \cite{i2s}. La velocidad del reloj depende de la calidad del audio y de cuántos canales se transmitan:
 \end{itemize}
 
@@ -163,7 +170,7 @@ f_{BCK} = f_s \cdot N_{canales} \cdot N_{bits}
 \section{Diseño y Metodología}
  
 \subsection{Chasis y tracción}
-Se emplea un chasis rígido de tracción a las cuatro ruedas (4WD) con cuatro motorreductores DC que accionan las ruedas de forma independiente, acoplados eléctricamente en paralelo por lado (dos derechos, dos izquierdos) para lograr un giro diferencial. La carrocería estética (Rayo McQueen) se monta de forma no estructural para no restringir el acceso al cableado.
+Se emplea un chasis rígido de tracción a las cuatro ruedas (4WD) con cuatro motorreductores DC que accionan las ruedas de manera independiente, acoplados eléctricamente en paralelo por lado (dos derechos, dos izquierdos) para lograr un giro diferencial. La carrocería estética (Rayo McQueen) se monta de forma no estructural para no restringir el acceso al cableado.
  
 \subsection{Motores DC y caja reductora}
 Se seleccionan motorreductores tipo ``TT'', habituales en kits educativos de robótica móvil, con caja reductora integrada de relación nominal 1:48 y tensión de operación 3--6 V. Estos valores corresponden a especificaciones típicas reportadas por múltiples fabricantes de este tipo de motorreductor y deben confirmarse contra la hoja de datos específica del lote adquirido.
@@ -173,7 +180,7 @@ Dado que se manejan cuatro motores, se utilizan dos módulos TB6612FNG (un módu
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=0.95\linewidth]{Block Diagram.png}
+    \figsafe{Block Diagram.png}{0.95\linewidth}
     \caption{Diagrama de bloques interno del controlador TB6612FNG.}
     \label{fig:tb6612fng}
 \end{figure}
@@ -186,7 +193,7 @@ Se diseñó una arquitectura de potencia aislada a partir de una única batería
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=1\linewidth]{Typical Application.png}
+    \figsafe{Typical Application.png}{1\linewidth}
     \caption{Circuito típico de aplicación del regulador Buck LM2596.}
     \label{fig:lm2596}
 \end{figure}
@@ -228,7 +235,7 @@ ESP32 clásico (\texttt{esp32dev}) & ESP32 & Prototipo del Entregable 1; retirad
 \end{tabular}
 \end{table}
 
-El cerebro es un ESP32-S3 de dos núcleos con 16 MB de memoria flash y 8 MB de PSRAM, montado sobre una placa portadora de 40 pines (Freenove ESP32-S3-WROOM) a la que se conecta la cámara por un conector plano. La PSRAM es indispensable para guardar las imágenes de la cámara mientras se procesan, y los dos núcleos permiten repartir las tareas: la red y el audio por un lado, el control del movimiento por el otro. El cuerpo es un RP2040 (dos núcleos Cortex-M0+ a 133 MHz) elegido porque genera el PWM del propio chip, a cualquier frecuencia y sin cargar al cerebro, que solo le dedica los dos pines del puerto serial. El detalle de las conexiones y la asignación de pines se documenta en \texttt{docs/circuit-plan.md} y en el esquema eléctrico del repositorio.
+El cerebro es un ESP32-S3 de dos núcleos con 16 MB de memoria flash y 8 MB de PSRAM, montado sobre una placa portadora de 40 pines (Freenove ESP32-S3-WROOM) a la que se conecta la cámara por un conector plano. La PSRAM es indispensable para guardar las imágenes de la cámara mientras se procesan, y los dos núcleos permiten repartir las tareas: la red y el audio por un lado, el control del movimiento por el otro. El cuerpo es un RP2040 (dos núcleos Cortex-M0+ a 133 MHz). Se eligió por tres razones prácticas: ya disponíamos de uno, ofrece muchos pines de propósito general y se comunica con el ESP32 de forma nativa a 3.3 V. Esta última es la más cómoda, porque un Arduino clásico trabaja a 5 V y habría exigido circuitos adicionales para adaptar los niveles de las señales. A eso se suma que el RP2040 genera el PWM con su propio hardware, a cualquier frecuencia y sin carga para el cerebro, que solo le dedica los dos pines del puerto serial. La alternativa evaluada fue un expansor de PWM por I\textsuperscript{2}C (el PCA9685), que se descartó porque en ese momento la tienda estaba cerrada y no había manera de conseguirlo. El detalle de las conexiones y la asignación de pines se documenta en \texttt{docs/circuit-plan.md} y en el esquema eléctrico del repositorio.
 
 \subsection{Dispositivos de entrada y salida}
 
@@ -266,7 +273,7 @@ La iluminación usa una tira de LEDs de color controlables \textbf{WS2812} de 5 
 \subsubsection{Sensor de movimiento (entrada)}
 El sensor de movimiento es un \textbf{BMI160} de 6 ejes ---acelerómetro y giroscopio--- \cite{bmi160}. Se comunica por I\textsuperscript{2}C. Toma 200 muestras por segundo, con un alcance de $\pm 8$~g en las aceleraciones y $\pm 2000$~ grados/segundo en el giro, para saber cómo está orientado e inclinado el vehículo. Estos datos permiten mostrar una interfaz de inclinación en la aplicación de Godot.
 
-\subsection{Firmware (rutina mínima avance--giro--detención)}
+\subsection{Primera etapa del firmware: rutina avance--giro--detención}
 
 
 El firmware es implementado en C/C++ para el microcontrolador ESP32 \cite{esp32}. Tiene una secuencia de arranque, donde los 4 motores se activan suavemente para probar que el PWM este funcionando correctamente y la direccion de rotacion sea la correcta. Después de esto se ejecuta la secuencia principal, donde hay varias tareas previamente implementadas:
@@ -283,7 +290,7 @@ Los pines de control se asignan a puertos GPIO digitales aptos para  modulación
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=1\linewidth]{ESP32-Board-Pinout.png}
+    \figsafe{ESP32-Board-Pinout.png}{1\linewidth}
     \caption{Distribución de pines (Pinout) del microcontrolador ESP32 destacando puertos GPIO/PWM.}
     \label{fig:esp32}
 \end{figure}
@@ -332,13 +339,27 @@ Task tasks[] = {
 \end{verbatim}
 \textbf{El codigo completo se puede encontrar en el repositorio:} https://github.com/botero-dev/usbbog-realidad-mixta
 
+Con esa primera versión ya validada, el firmware se reorganizó en los dos programas que se describen a continuación: uno para el cerebro y otro para el cuerpo del vehículo.
+
+\subsection{Firmware del cerebro (ESP32-S3)}
+El cerebro ejecuta un único programa, escrito en C++ sobre el entorno de Arduino-ESP32, que reúne la red, la cámara, el audio, el sensor de movimiento y el control del vehículo. Al arrancar, inicializa la cámara, crea su propia red Wi-Fi y levanta dos servidores web: uno para la página y los comandos, y otro, en un puerto aparte, para el video en vivo. A partir de ahí conviven varias tareas: la atención del servidor web, la reproducción de audio ---que solo suena cuando se pide--- y la lectura del sensor de movimiento 200 veces por segundo. El control del vehículo toma las órdenes que llegan por la interfaz multimedia y las traduce en cuatro niveles de potencia que envía al controlador de los motores por el puerto serial a 100 Hz.
+
+\subsection{Firmware del cuerpo (RP2040)}
+El cuerpo recibe esos cuatro niveles y genera con el propio hardware del chip las señales de los dos puentes H: cuatro líneas PWM a 20 kHz y ocho líneas de dirección, más una línea de habilitación común. Su responsabilidad principal es la seguridad: si dejan de llegar nuevos niveles durante 100 ms ---porque el cerebro se reinicie, el cable se suelte o el teléfono pierda la conexión---, baja la línea de habilitación y los motores se detienen. También limita cuánto puede cambiar la potencia de un instante al siguiente, así que una orden dañada por ruido no pueda producir una aceleración brusca. El cuerpo no decide nada por sí mismo: obedece esos niveles y vigila que sigan llegando.
+
+\subsection{Protocolo de comunicación entre cerebro y cuerpo}
+La comunicación usa el puerto serial a 921600 baudios y un formato de trama fijo para que ambos programas se entiendan sin ambigüedad. El cerebro envía a 100 Hz una trama de 13 bytes con el tipo de orden, un contador de secuencia y los cuatro niveles, y además un byte de verificación (CRC) que permite descartar cualquier trama alterada por ruido. El cuerpo responde a 10 Hz con una trama de estado que informa si la comunicación está sana y si el vigilante está armado. Ese byte de verificación es lo que hace robusto el enlace: en las pruebas se mantuvo en cero errores durante miles de tramas.
+
+\subsection{Interfaz de usuario}
+El usuario gobierna el vehículo desde una página web que la propia placa sirve, sin instalar nada: basta con unirse a su red Wi-Fi y abrir la dirección en el navegador. La página muestra el video en vivo y ofrece los mandos de conducción, los botones de sonido y un panel con la inclinación medida por el sensor. Como complemento se desarrolló una aplicación de escritorio en Godot que consume esa misma interfaz HTTP.
+
 \section{Resultados}
 
 El diseño electromecánico detallado en la sección anterior se materializó en un prototipo funcional, cuya integración física se presenta en la Figura \ref{fig:ensamble_fisico}. En esta vista superior se evidencia la distribución del cableado de potencia y señal, la ubicación central del microcontrolador ESP32 y la disposición simétrica de los controladores de motor para la tracción 4WD.
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=0.8\linewidth]{ensamble_fisico.jpeg}
+    \figsafe{ensamble_fisico.jpeg}{0.8\linewidth}
     \caption{Vista superior del ensamblaje electromecánico final del vehículo RC, mostrando la integración del chasis, motores, puentes H, regulador de voltaje y microcontrolador.}
     \label{fig:ensamble_fisico}
 \end{figure}
@@ -355,12 +376,42 @@ El torque total necesario en el eje de las ruedas es $\tau_{req} = F_{min} \cdot
 \subsection{Análisis Eléctrico y Dimensionamiento}
 Según las especificaciones técnicas, el motor TT estándar a 6 V presenta una corriente de arranque de aproximadamente $1.0 \text{ A}$ por unidad. Al estar acoplados en paralelo por lado, cada puente H TB6612FNG experimenta un pico de corriente de $2.0 \text{ A}$ en el arranque. Dado que el controlador TB6612FNG soporta hasta $3.2 \text{ A}$ pico por canal \cite{tb6612fng}, el sistema está correctamente dimensionado y opera dentro de un margen seguro frente a su límite térmico, validando la arquitectura de alimentación propuesta.
 
-En un momento dañamos el regulador de voltaje al conectarle el voltaje de entrada con la polaridad invertida. Por esto tuvimos que buscar opciones para poder alimentar el carro robot. Una de las opciones fue usar un juego de 4 pilas AA en serie. En principio, esto parecía que iba a funcionar, ya que las ruedas giraban bien mientras programabamos el microcontrolador, y teníamos el carro en un pedestal en la mesa de trabajo. Pero en cuanto pusimos el carro sobre sus ruedas, el consumo de corriente de los motores reducía tanto el voltaje debido al peso de sus componentes, y así mismo interfiere la fricción entre la superficie y el material de la llanta del vehículo, provocando que se reiniciara el microcontrolador. Afortunadamente encontramos un par de baterías 18650, y de esta manera logramos alimentar el carro con un voltaje adecuado para los motores, alrededor de 7.4V. Con este par de baterias hicimos la prueba final de funcionamiento que se ve en el video.
+En un momento dañamos el regulador de voltaje al conectarle el voltaje de entrada con la polaridad invertida. Por esto tuvimos que buscar opciones para poder alimentar el carro robot. Una de las opciones fue usar un juego de 4 pilas AA en serie. En principio, esto parecía que iba a funcionar, ya que las ruedas giraban bien mientras programábamos el microcontrolador, y teníamos el carro en un pedestal en la mesa de trabajo. Pero en cuanto pusimos el carro sobre sus ruedas, el consumo de corriente de los motores hacía caer el voltaje por el peso de sus componentes, y a eso se sumaba la fricción entre la superficie y la llanta, lo que provocaba que el microcontrolador se reiniciara. Afortunadamente encontramos un par de baterías 18650, y de esta manera logramos alimentar el carro con un voltaje adecuado para los motores, alrededor de 7.4V. Con este par de baterías hicimos la prueba final de funcionamiento que se ve en el video.
 
 
 \textbf{Video del vehículo en funcionamiento mostrando la ejecución completa de la rutina automática:} https://youtu.be/Z-YuQ6jdH08
 
 
+
+\subsection{Validación de la alimentación y del control de motores}
+La etapa de potencia se verificó por partes. En el cuerpo, el autotest comprobó los cuatro modos del puente H ---avance, reversa, frenado y rueda libre--- y confirmó que la línea de habilitación permanece en bajo antes de que el firmware la active, condición sobre la que descansa toda la seguridad del sistema. Con los cuatro motores conectados y alimentados desde la batería real, el vehículo se desplazó correctamente, lo que valida el reparto de la carga entre los dos controladores y el dimensionamiento de la etapa de potencia.
+
+\subsection{Validación de la cámara}
+La cámara se detectó correctamente como un sensor OV3660 y sus imágenes se almacenaron en la PSRAM, sin necesidad de reducir la resolución. La transmisión de video en vivo funcionó de manera estable, con una tasa que se mantuvo entre 15 y 30 cuadros por segundo (fps) durante las pruebas.
+
+\subsection{Validación del audio}
+La cadena de audio ---convertidor de digital a analógico, amplificador y parlante--- reprodujo correctamente los tonos de prueba y un fragmento de audio. La prueba decisiva consistió en reproducir sonido con el video en marcha: la reproducción terminó en 1031 ms frente a los 1020 ms esperados (cerca de un 1\,\% por encima), sin cortes ni interrupciones. Esto confirma que la cámara y el audio pueden funcionar a la vez compartiendo la memoria PSRAM sin conflictos.
+
+\subsection{Validación del sensor de movimiento}
+El sensor respondió en el bus I\textsuperscript{2}C en su dirección esperada y entregó datos estables a 200 Hz. La comprobación clave fue la de la gravedad: con el vehículo en reposo, la magnitud estimada de la aceleración fue de 1.046 g, dentro del margen esperado de 1 g. También se comprobó que la velocidad de bus de 400 kHz no es fiable para escribir la configuración de este sensor en el montaje actual, por lo que el sistema trabaja a 100 kHz.
+
+\subsection{Validación del enlace y del vigilante}
+Con ambos microcontroladores conectados, el cerebro envió tramas a 100 Hz durante varios minutos con cero errores de verificación y recibió las respuestas de estado a 10 Hz. El vigilante del cuerpo se probó a propósito: al detener la comunicación desde el cerebro, el cuerpo bajó la habilitación en menos de 100 ms y los motores quedaron sin par, y al reanudarse la comunicación el sistema se recuperó por sí solo. Este comportamiento respalda la seguridad básica del vehículo.
+
+\section{Limitaciones y trabajo futuro}
+\begin{itemize}
+\item El vehículo es teleoperado: todavía no ejecuta un control autónomo a partir de la cámara o del sensor de movimiento.
+\item La dirección de giro de cada motor aún no se ha verificado contra las ruedas, un paso que es necesario cerrar antes de cualquier control automático.
+\item La transmisión de video usa HTTP sobre TCP, cómodo, aunque se puede mejorar para tiempo real; una migración a UDP o a WebRTC reduciría notablemente el retardo.
+\item El sensor de movimiento no incluye brújula, así que no ofrece orientación absoluta y el giro calculado se desvía con el tiempo.
+\item La red propia del vehículo no ofrece Internet, y en algunos teléfonos con datos móviles activos la página no carga hasta desactivarlos.
+\item Sería bueno añadir una resistencia en serie en cada línea del enlace entre las dos placas, para proteger contra el encendido asimétrico.
+\end{itemize}
+
+\section{Conclusiones}
+Se diseñó, implementó y validó un vehículo a control remoto que integra control de motores, transmisión de video, audio y medición inercial. La decisión de diseño más importante fue repartir el trabajo entre dos microcontroladores con responsabilidades separadas: el cerebro concentra la inteligencia y los periféricos, mientras que el cuerpo se encarga de la etapa de potencia y de una parada de seguridad. Eso permitió superar la limitación de pines del cerebro sin renunciar a la cámara, el audio ni la red.
+
+Según las pruebas realizadas, el prototipo cumple los objetivos planteados: la etapa de potencia mueve el vehículo, los subsistemas de entrada y salida responden, y la comunicación entre ambos microcontroladores es fiable y segura ante fallos. Quedan como trabajo futuro el control autónomo, la migración del video a un transporte de tiempo real y la verificación final de la dirección de los motores.
 
 % references section
 
