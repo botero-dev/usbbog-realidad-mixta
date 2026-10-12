@@ -39,11 +39,19 @@ The code is written against the SDK's own names (`pwm_set_clkdiv`, `pwm_set_wrap
 
 ## Build, flash, watch
 
+There are **two environments**, and the difference between them is one flag:
+
 ```bash
-pio run -d firmware/pico_body                 # build
-pio run -d firmware/pico_body -t upload       # flash
-pio run -d firmware/pico_body -t monitor      # USB serial
+pio run -d firmware/pico_body                        # build the SELF TEST (default env)
+pio run -d firmware/pico_body -t upload              # flash the SELF TEST
+pio run -d firmware/pico_body -e picolink -t upload  # flash LINK mode -- the real job
+pio run -d firmware/pico_body -t monitor             # USB serial
 ```
+
+**The self-test is the default on purpose.** It is still load-bearing: bring-up steps 4
+and 5 (matching the printed `FL`/`RL`/`RR`/`FR` names to the actual wheels) are not
+closed, and they need the sweep. A plain `pio run -t upload` should not silently replace
+the tool that closes them, so putting the car into link mode is a deliberate choice.
 
 `printf()` goes out of the **USB** port and claims no GPIO. That is deliberate: UART0's
 default pins are `GP0`/`GP1`, which are `DRV1_PWMA` and `DRV1_AIN1` on this board, so a
@@ -64,18 +72,25 @@ First flash of a blank board needs **BOOTSEL** held (or drag `firmware.uf2` onto
 | --- | --- |
 | `include/protocol.h` | **The contract.** Frame layout, CRC-8, duty limits, motor order. Pure C++, no SDK or Arduino dependency, so it compiles on the host for testing. |
 | `include/motors.h` `src/motors.cpp` | PWM + direction layer. Owns every electrical subtlety. |
+| `include/link.h` `src/link.cpp` | **LINK mode.** Frame hunting, the 100 ms dead-man, the slew limit, the reply. `main()` is only a banner around `link::run()`. |
 | `include/log.h` | `logf()` — `printf` plus a `fflush`, so a crash between two lines does not lose the one explaining why. |
 | `include/status_led.h` | The on-board `GP25` LED as the "powered and running" light, guarded so it compiles to nothing on a Pico W (see below). |
-| `src/main.cpp` | Self-test today; the link layer next. |
+| `src/main.cpp` | Two modes selected by `PICO_MODE_SELFTEST`: the bench self-test, or LINK. |
 
 Two constant-time checks worth knowing about:
 
 * `protocol.h` has a `static_assert` that CRC-8 (poly `0x07`) gives `0xF4` over
   `"123456789"`. A typo in the polynomial becomes a **compile error** instead of a link
-  that silently rejects every frame.
+  that silently rejects every frame. It is written as **recursion, not loops**, because a
+  loop in a `constexpr` body is C++14 and the brain's Arduino core builds at
+  `-std=gnu++11` — see the note in the file before "simplifying" it back.
 * The self-test prints `GP28` *before* `motors::init()` as well as after. Before, it
   should read `0` because the RP2040 pad resets with its pull-down enabled — that is the
   property the whole fail-safe chain rests on, so it is worth seeing rather than trusting.
+* The wire format has host-side tests that need no hardware at all:
+  `firmware/brain/tools/test_link.cpp` (see the brain's README). They cover the CRC
+  against an independent implementation, the round-trips, **every single-bit corruption**,
+  the sync hunt in noise, and the mixer.
 
 ---
 
@@ -142,14 +157,85 @@ terminal cannot tell you — that part is eyes only.
 
 ---
 
+## LINK mode — the real job
+
+`-e picolink` selects it. `main()` drives `STBY` low *before* the 1.5 s USB wait (the car
+must be incapable of moving from the instant the firmware starts, not when a host happens
+to attach), prints a short banner and calls `link::run()`, which never returns.
+
+**UART0, `GP16` TX / `GP17` RX, 921600 8N1, no flow control.** Nothing about the link is
+automatic: the Pico sends nothing until a valid frame arrives, starts with `STBY` low, and
+there is no way to make the motors move except by sending frames.
+
+The three jobs, in the order they matter:
+
+1. **The dead-man.** No *motion command* for **100 ms** → `STBY` low, everything high-Z,
+   one loud line in the log. This is the link's whole reason for existing: it is what
+   stops the car when the S3 crashes, reboots, or the TX wire falls off.
+2. **Framing.** `proto::SyncHunt` (in `protocol.h`, shared with the brain's end) hunts a
+   13-byte frame out of the byte stream and accepts it only on a matching CRC.
+3. **The slew limit.** `±100` permille per frame on `SET` frames. One bad frame cannot
+   command a full-scale reversal.
+
+The reply goes back at **10 Hz**: `STBY` state, link-good, watchdog-armed, a one-shot
+fault code (`FAULT_CRC` / `FAULT_TIMEOUT`) and uptime in ms. The debug log is on the USB
+port, so it never touches the link.
+
+A `[link]` line every 2 s is the evidence:
+
+```
+[link]  200 frames/2s  ok  1406  crc 0  timeouts 0  stby 0  seq 125 type 04  duty    +0    +0    +0    +0
+[link]    0 frames/2s  ok 14766  crc 0  timeouts 1  stby 0  seq 173 type 04  duty    +0    +0    +0    +0
+*** DEAD-MAN: no motion command for 100 ms -> STBY LOW ***
+```
+
+These are **real captured lines** (2026-10-11), not an illustration:
+
+* `200 frames/2s` is exactly 100 Hz, and `seq` advances `+200` per window — so the counter
+  is a rate check as well as a liveness check.
+* `type 04` is `DISABLE`, the brain's safe start state, which is why every duty reads `+0`
+  and `stby` is `0`. A *driving* link would show `type 01` with non-zero duties; **that has
+  not been exercised yet.**
+* The second line is the S3 stopped underneath the Pico: `frames/2s` falls to zero,
+  `timeouts` goes to `1`, and the dead-man announces itself. `timeouts` then **stays** at 1
+  when the frames resume — it is one-shot per outage and re-arms on the next motion command.
+
+### Two readings the wire format does not spell out
+
+Both are settled in `protocol.h` and both are deliberate, because they are the kind of
+thing that looks like an implementation detail and is actually a safety decision:
+
+* **`PING` does not feed the dead-man.** Only `SET`/`BRAKE`/`COAST`/`DISABLE` do. If
+  `PING` refreshed the timer, a brain that kept pinging but stopped sending duties would
+  hold the last commanded duty **forever** — the timer running and protecting nothing.
+  The reply still reports `PING` as *link-good*, because "is the S3 talking" and "does the
+  S3 still own the motors" are different questions.
+* **`DISABLE` is not latched.** It is a frame, not a mode: the next `SET` re-arms the
+  drivers. A latch would need a re-enable message this protocol does not have, which would
+  make `DISABLE` a one-way trip whose only exit was a reboot.
+
+---
+
 ## Bring-up status
 
 | Stage | State |
 | --- | --- |
 | 1 — PWM layer + self-test | ✅ **flashed and verified on a real Pico** (2026-10-11) |
-| 2 — UART framing, CRC, decode | not started |
-| 3 — dead-man, slew limit, `STBY` sequencing | not started |
-| 4 — reply frame + status counters | not started |
+| 2 — UART framing, CRC, decode | ✅ **verified, real S3 on the other end** (2026-10-11) |
+| 3 — dead-man, `STBY` sequencing | ✅ **verified — provoked and fired** (2026-10-11) |
+| 3 — slew limit | ⚠️ clamp covered by host tests; **never exercised** — no non-zero `SET` yet |
+| 4 — reply frame + status counters | ✅ **verified** — the brain saw 10 Hz replies, `st 0x06` |
+
+Stages 2–4 were closed in one bench session on 2026-10-11, with both boards wired to each
+other: 100 Hz frames in with `crc 0`, 10 Hz replies out, and the dead-man **provoked
+deliberately** by holding the S3 in its ROM bootloader. Three things that session did *not*
+cover, listed so the ✅s above are not read as more than they say:
+
+* **the literal wire-pull** — a stopped sender and a pulled wire both look like "no bytes",
+  so the timer logic is identical; but a *floating* input injects noise, and noise could in
+  principle produce a false-accept frame that refreshes the timer.
+* **the slew limit** — see the table.
+* **the motors** — `STBY` is LOW and nothing has been commanded to move.
 
 **Stage 1 was verified on hardware on 2026-10-11**, flashed with `pio run -t upload` via
 picotool with the board in BOOTSEL. Actual output:
@@ -179,8 +265,10 @@ What that actually establishes, in order of importance:
 * `disable_all` lands at `STBY=0` with every level zeroed — the dead-man's end state.
 * The clock and PWM readouts confirm the arithmetic on the silicon, not just on paper.
 
-**Not verified: the link.** No frames have been received and the dead-man has never
-fired. Scope checks on `GP0`/`GP5`/`GP10`/`GP15` (bring-up step 4 in §11) still stand.
+**This paragraph is about stage 1 only.** The link is a separate story and it has its own
+section above — verified on 2026-10-11. What the self-test establishes is the Pico's own
+pins, so the scope checks on `GP0`/`GP5`/`GP10`/`GP15` (bring-up step 4 in §11) still stand
+on their own.
 
 ### Then it ran on the car
 

@@ -9,6 +9,10 @@ answer the question neither could ask alone: **do the camera and the audio chain
 coexist?** §6 predicts they might not, because the camera's DMA and the I²S DMA both reach
 into the octal PSRAM bus.
 
+It is also now the **brain of the car**: it drives the motors over a UART link to the
+RP2040 Pico (§ *The motors, and the link to the Pico* below), and it has absorbed the
+mixing code that used to sit in `firmware/car_control` (§10.3).
+
 > ✅ **Both halves verified separately, 2026-10-11.**
 > * **Audio:** three beeps out of the PCM5102A + class-D amp + speaker, first try once the
 >   build configuration was fixed — so `S3 → DAC → amp → speaker` is verified end to end,
@@ -85,6 +89,8 @@ you nothing about which one.
 | `GET /status` | JSON: heap, PSRAM, stream clients, fps, `audio`, sensor settings, LED. |
 | `GET\|POST /play` | `?src=beeps` or `?src=clip`, plus an optional `&vol=0..1000` (per-mille) to set the level with it. Returns immediately; playback happens in the audio task. |
 | `GET\|POST /control` | Sensor and LED settings: `framesize`, `quality`, `brightness`, `contrast`, `saturation`, `hmirror`, `vflip`, `led_r/g/b`, `led_auto`. |
+| `GET\|POST /drive` | The motors: `?th=..&turn=..&twist=..` (mixer, per-mille ±1000) **or** `?fl=..&rl=..&rr=..&fr=..` (the raw four duties, all four required). |
+| `GET\|POST /stop` | `?mode=brake` (**default**) / `coast` / `disable`. A stop that coasts is not a stop, so brake is the default. |
 
 **Two ports, and it is not cosmetic.** `esp_http_server` runs *all* of a server's handlers
 in **one** FreeRTOS task — `httpd_config_t` has a single `task_priority` — and our
@@ -112,6 +118,104 @@ so pressing "beeps" would look like it had stopped the video.
 streaming, white = audio playing, and any explicit colour is a torch that turns status mode
 off until `?led_auto=1`. It is driven with `neopixelWrite()` — RMT, never PWM, which on a
 WS2812 data line is not "dim" but corrupted bit timing.
+
+---
+
+## The motors, and the link to the Pico
+
+The S3 does not touch a motor pin. It encodes four signed duties into a **13-byte frame at
+100 Hz** and sends them to the Pico on **UART1**; the Pico turns them into PWM. The wire
+format is `protocol.h` — one file, living in `firmware/pico_body/include/` and compiled by
+*both* projects (`-I${PROJECT_DIR}/../pico_body/include`), so the two ends cannot drift
+apart.
+
+### It is NOT on GPIO43/44, whatever the plan said
+
+Plan §2 put the link on `43`/`44` (`U0TXD`/`U0RXD`). On this carrier those two pins **are
+the USB console** — the USB-C port goes through a bridge to them — so a link there would
+have cost the serial log, which is how every diagnosis in this file was made. Measured,
+twice: a build with `-DARDUINO_USB_CDC_ON_BOOT=1` (asking for a native-USB console
+instead) produced **no output anywhere**, and that is what settles it.
+
+The ESP32-S3's GPIO matrix routes a UART to any pin, so the link moved to **UART1 on
+`GPIO1` (TX) / `GPIO2` (RX)** — the two pins the I²C move had just freed.
+
+| | |
+| --- | --- |
+| `GPIO1` TX → | Pico `GP17` |
+| `GPIO2` RX ← | Pico `GP16` |
+
+* **Cost:** the S3 is now out of spare analog inputs — `GPIO1`/`GPIO2` were `ADC1_CH0`
+  and `ADC1_CH1`.
+* **Gain, beyond the log:** the ROM bootloader banners on UART0 *only*, so the Pico no
+  longer sees ~30 bytes of garbage on every S3 reset. Plan §2.3's banner note no longer
+  describes this build.
+
+### Two things the Pico's dead-man does NOT cover
+
+The Pico drops `STBY` if frames stop arriving for 100 ms. That covers the brain crashing,
+rebooting, or the TX wire coming off — and nothing else.
+
+**It does not cover a lost client.** If the phone sleeps, leaves Wi-Fi range, or the page
+is closed, the brain is perfectly healthy and keeps sending the last duty it was told: the
+car keeps driving, at speed, with nobody holding a control, and the Pico cannot tell the
+difference — from its side nothing has changed. So the brain has its own watchdog:
+**no `/drive` for 250 ms → `BRAKE`** (`kControlTimeoutMs` in `motor_link.h`). Deliberately
+brake and not coast, because a coasting car keeps rolling, and the point of the watchdog is
+to stop it.
+
+That is also why **the page re-sends at 10 Hz while a control is held** — the watchdog
+makes that necessary rather than merely harmless, and it is what turns a dropped Wi-Fi link
+into a stopped car. Releasing a button sends `/stop` explicitly instead of waiting for the
+watchdog, because a quarter second of coast on every release is not what "stop" means.
+
+### The page controls
+
+Hold a direction; releasing brakes. Arrow keys and WASD work too, the speed slider scales
+the command, and `STOP` is always reachable. The buttons use **pointer events with
+`setPointerCapture`**, not clicks, for a specific reason: without capture, a finger that
+slides off a button never delivers `pointerup`, and the car would keep driving with nothing
+held down. `blur` clears everything for the same reason — a key held while the tab loses
+focus never gets its `keyup`.
+
+> ⚠️ **The direction signs are UNVERIFIED.** They are `car_control`'s, kept exactly, and
+> that code's own comment called `+turn` "left" while producing duties (left wheels
+> forward, right wheels back) that rotate a car the other way. Which channel is which wheel
+> is bring-up steps 4/5 and is **still open** — the arithmetic is certain, the mapping is
+> not, and no amount of firmware can settle it. **Wheels off the ground for the first
+> press.**
+
+The `/status` JSON carries the link state under `link_*` and `pico.*` (`seen`, `status`,
+`fault`, `age_ms`), so "is the Pico talking, and how long ago?" is answerable from a
+browser. The page shows the same thing under the drive pad, refreshed once a second.
+
+### Host-side tests — no hardware needed
+
+```bash
+cd firmware/brain
+g++ -std=gnu++11 -Wall -Wextra -I include -I ../pico_body/include tools/test_link.cpp -o /tmp/test_link
+/tmp/test_link
+```
+
+**317 checks.** The CRC against an independently written loop implementation over every
+length from 0 to 64; frame and reply round-trips over all five message types; **every
+single-bit corruption** in both formats rejected (a corrupt frame that is *obeyed* is the
+failure the whole design exists to prevent); the sync hunt fed a frame buried in bytes that
+contain the sync pattern; and the mixer, including a case where the 32-bit intermediate
+changes the answer.
+
+`-std=gnu++11` is deliberate — that is what this core builds with, so the test doubles as
+proof that `protocol.h` has not drifted into C++14. It **had**: the CRC used loops inside
+`constexpr` bodies, which GCC rejects at `gnu++11` (`body of 'constexpr' function not a
+return-statement`), so the brain could not have compiled it at all. It is recursion now,
+and the test is what keeps it that way.
+
+The same test also found a real property of the design worth knowing: feeding a burst of
+noise and then a frame produces a **coincidental** second acceptance, because a random
+window that begins with the sync pattern passes CRC-8 about 1 time in 256. That is inherent
+to an 8-bit CRC, not a bug — the real frame is still recovered intact — and what bounds the
+damage is the Pico's slew limit: a false accept can command at most one frame, ±100
+permille, until the next real frame arrives 10 ms later.
 
 ---
 

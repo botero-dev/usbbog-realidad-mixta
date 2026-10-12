@@ -65,7 +65,7 @@ Derived from `car.kicad_sch`. Build to this list, one row at a time.
 | `I2S_LRCK` | U1.R14 GPIO45 VSPI · U6.4 LCK |
 | `LED_STRIP_DIN` | R6.2  · LED1.3 DIN |
 | `LINK_RX_PICO` | U2.22 GP17 · R1.2  |
-| `LINK_RX_S3` | U1.R2 GPIO44 U0RXD · R2.2  |
+| `LINK_RX_S3` | U1.R4 GPIO2 ADC1_CH1 · R2.2  |
 | `MOT_FL_A` | U3.JP1-5 A01 · M1.1  |
 | `MOT_FL_B` | U3.JP1-4 A02 · M1.2  |
 | `MOT_FR_A` | U4.JP1-2 B01 · M4.1  |
@@ -77,7 +77,7 @@ Derived from `car.kicad_sch`. Build to this list, one row at a time.
 | `MOT_STBY` | U3.JP2-4 STBY · U4.JP2-4 STBY · R5.2  · SW1.1  |
 | `PICO_TXD` | U2.21 GP16 · R2.1  |
 | `S3_LED` | U1.R15 GPIO48 WS2812 · R6.1  |
-| `S3_TXD` | U1.R1 GPIO43 U0TXD · R1.1  |
+| `S3_TXD` | U1.R3 GPIO1 ADC1_CH0 · R1.1  |
 | `SPK_A` | U7.6 OUT+ · SP1.1  |
 | `SPK_B` | U7.7 OUT- · SP1.2  |
 | `STBY_PICO` | U2.34 GP28 ADC2 · R5.1  |

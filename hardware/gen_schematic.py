@@ -270,10 +270,25 @@ INSTANCES = [
         "L1":  "+3V3_S3",
         "L20": "+5V",
         # right row
-        "R1":  "S3_TXD",       # GPIO43 -> R1 -> Pico GP17
-        "R2":  "LINK_RX_S3",   # <- Pico GP16 -> R2
+        # R1/R2 (GPIO43/44 = U0TXD/U0RXD) are DELIBERATELY NO-CONNECT.
+        # On this carrier the USB-C port goes through a bridge to exactly these two
+        # pins, so they ARE the serial console. The link lived here until
+        # 2026-10-11, when that was found to cost the boot log -- a build with
+        # -DARDUINO_USB_CDC_ON_BOOT=1 asking for a native-USB console instead
+        # produced NO OUTPUT ANYWHERE, which is what settles it.
+        #
+        # THE LINK, moved to R3 (GPIO1) and R4 (GPIO2) on 2026-10-11. The ESP32-S3's
+        # GPIO matrix routes UART1 to any pin, so this was a wiring choice, not a
+        # peripheral limit.
+        #   COST : both pins were ADC1_CH0 / ADC1_CH1 -- the S3 now has no spare
+        #          analog inputs (the battery divider stays on the Pico's GP26).
+        #   GAIN : the ROM bootloader banners on UART0 only, so the Pico no longer
+        #          sees ~30 bytes of garbage on every S3 reset.
+        "R3":  "S3_TXD",       # GPIO1 -> R1 -> Pico GP17
+        "R4":  "LINK_RX_S3",   # GPIO2 <- R2 <- Pico GP16
         # I2C moved here from R3/R4 (GPIO1/GPIO2) on 2026-10-11, at the user's
-        # request. 41/42 are not strapping pins, are not bonded to the PSRAM die and
+        # request -- and R3/R4 have since gone to the link above. 41/42 are not
+        # strapping pins, are not bonded to the PSRAM die and
         # are not USB, so they were genuinely free.
         # SCL on R5 and SDA on R6 matches the BMI160 module's own top-to-bottom order
         # (VIN, 3V3, GND, SCL, SDA, CS, SA0), so the pair runs parallel with no
@@ -328,8 +343,8 @@ INSTANCES = [
         # Link: UART0's TX/RX is routable ONLY to GP0/1, GP12/13, GP16/17 and GP28/29.
         # GP14/GP15 are UART0's CTS/RTS and cannot carry the link at all, so this is
         # the next genuine pair after the motor block.
-        "21": "PICO_TXD",     # GP16 -> R2 -> S3 GPIO44
-        "22": "LINK_RX_PICO",  # GP17 <- R1 <- S3 GPIO43
+        "21": "PICO_TXD",     # GP16 -> R2 -> S3 GPIO2
+        "22": "LINK_RX_PICO",  # GP17 <- R1 <- S3 GPIO1
         "34": "STBY_PICO",    # GP28 -> R5 (1k) -> MOT_STBY. GP28 is in GPIO0-29,
                                # so its pad resets with PDE=1 and STBY is held low
                                # before a single line of firmware runs.

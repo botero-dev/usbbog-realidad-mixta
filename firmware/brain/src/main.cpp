@@ -18,9 +18,15 @@
 //   curl 'http://192.168.4.1/control?framesize=qvga'
 // before you go looking for a bug in the audio path.
 //
-// What it is NOT yet: no BMI160, no control loop, no link to the Pico, no motors.
-// Bring-up step 3 of section 11 is the IMU, and the core split for the control
-// task comes with it.
+// What it is and is not: camera, audio, AP, IMU and the LINK TO THE PICO are all
+// here. What is still missing is the thing that will consume them -- the control
+// loop -- which is why nothing reads the IMU for steering yet and the link only
+// ever carries what a human asked for from the web page.
+//
+// The link runs at 100 Hz on UART1 (GPIO1/GPIO2). It is NOT on UART0/GPIO43-44,
+// which is what plan section 2 originally said: on this carrier those pins ARE
+// the USB serial console, so using them would have cost the log. See
+// include/motor_link.h for the whole argument.
 //
 // AUDIO IS SILENT UNTIL ASKED. There is no autoplay: the two buttons on the page
 // are the only way to make a sound (see audio_player.h for why).
@@ -37,6 +43,7 @@
 #include "camera_pins.h"
 #include "esp_camera.h"
 #include "imu.h"
+#include "motor_link.h"
 
 // Credentials: `secrets.h` if it exists, otherwise the throwaway defaults in
 // secrets.example.h. Copy the example to set a real SSID/password; this project
@@ -58,6 +65,9 @@
 //                         /play.
 //   -DBRAIN_NO_CAMERA=1   skip camera init (no PSRAM frame buffers, no camera DMA)
 //   -DBRAIN_NO_RADIO=1    skip SoftAP and the web server (radio never transmits)
+//   -DBRAIN_NO_LINK=1     skip UART1 and the 100 Hz link task (no frames to the
+//                         Pico). Set by the audio-diagnostic envs: they exist to
+//                         remove variables, and a 100 Hz transmitter is one.
 //
 // The `diag` env in platformio.ini turns all three on at once. To bisect, drop
 // them one at a time -- see the comment there for the order.
@@ -69,6 +79,9 @@
 #endif
 #ifndef BRAIN_NO_RADIO
 #define BRAIN_NO_RADIO 0
+#endif
+#ifndef BRAIN_NO_LINK
+#define BRAIN_NO_LINK 0
 #endif
 
 namespace {
@@ -255,6 +268,15 @@ void print_banner() {
                 (int)PIN_LED_STRIP);
   Serial.printf("audio     : I2S %u Hz, SILENT until asked (sound + level buttons)\n",
                 (unsigned)audio_sample_rate());
+#if BRAIN_NO_LINK
+  Serial.println("link      : DISABLED in this build (BRAIN_NO_LINK=1)");
+#else
+  Serial.printf("link      : UART1 %u baud 8N1, TX GPIO1 -> Pico GP17, "
+                "RX GPIO2 <- Pico GP16\n", (unsigned)motor_link::kBaud);
+  Serial.printf("            %u Hz frames; %u ms without a drive command -> BRAKE\n",
+                (unsigned)motor_link::kFrameHz,
+                (unsigned)motor_link::kControlTimeoutMs);
+#endif
   Serial.println();
 }
 
@@ -312,6 +334,16 @@ void setup() {
   audio_init();
   Serial.println("[audio] I2S up. Nothing plays until a button is pressed.");
 
+  // The link to the Pico. Sent-then-forgotten: the task owns the UART from here,
+  // and it starts in DISABLE, so the car comes up with the drivers high-Z.
+#if BRAIN_NO_LINK
+  Serial.println("[diag] BRAIN_NO_LINK=1: no UART1, no motor task.");
+#else
+  if (!motor_link::init()) {
+    Serial.println("[link] FAILED to create the 100 Hz task -- no motors. Heap?");
+  }
+#endif
+
 #if BRAIN_BOOT_BEEP
   // The beep itself is driven from loop() (see there): a single 1 s window right
   // after a reset turned out to be far too easy to miss, and "I didn't catch it"
@@ -341,6 +373,8 @@ void setup() {
   Serial.println("  :80     /imu       JSON: accel, gyro, tilt, temp, seq (page polls 15 Hz)");
   Serial.println("  :80     /control   GET|POST sensor settings, LED colour, ?vol=0..1000");
   Serial.println("  :80     /play      GET|POST ?src=beeps|clip[&vol=0..1000]  (non-blocking)");
+  Serial.println("  :80     /drive     GET|POST the motors: ?th=..&fr=..&lr=.. (per-mille)");
+  Serial.println("  :80     /stop      GET|POST ?mode=brake|coast|disable  (brake by default)");
   Serial.println("  :81     /stream    multipart MJPEG  <-- the video");
   Serial.println();
   Serial.println("  The stream is on its own port because its handler never returns while");
@@ -410,6 +444,36 @@ void loop() {
                     imu.ax, imu.ay, imu.az, imu.gx, imu.gy, imu.gz, imu.pitch,
                     imu.roll, imu.temp_c, (unsigned)imu.seq, (unsigned)imu.errors);
     }
+
+#if !BRAIN_NO_LINK
+    // The link gets its own line, for the same reason the IMU does: these numbers
+    // are the evidence for a whole subsystem, and burying them in the heartbeat
+    // makes them invisible exactly when they matter. `age` is the number to read
+    // first -- if the Pico has gone quiet, nothing it reports means anything.
+    {
+      motor_link::State ls;
+      motor_link::state(&ls);
+      if (ls.pico_seen) {
+        Serial.printf("[link] tx %lu  rx %lu  crc %lu  age %lu ms  mode %s%s  "
+                      "pico st 0x%02x fault %u  up %u ms  duty %+5d %+5d %+5d %+5d\n",
+                      (unsigned long)ls.tx_frames, (unsigned long)ls.rx_replies,
+                      (unsigned long)ls.rx_crc_errors, (unsigned long)ls.pico_age_ms,
+                      motor_link::mode_name(ls.mode),
+                      ls.control_timeout ? " (timeout->BRAKE)" : "",
+                      (unsigned)ls.pico_status, (unsigned)ls.pico_fault,
+                      (unsigned)ls.pico_uptime_ms, (int)ls.duty[0], (int)ls.duty[1],
+                      (int)ls.duty[2], (int)ls.duty[3]);
+      } else {
+        // No reply at all is a completely different fault from a quiet Pico, and
+        // it is the normal state while the link is not wired yet.
+        Serial.printf("[link] tx %lu  rx 0  -- no reply from the Pico yet. Check:\n",
+                      (unsigned long)ls.tx_frames);
+        Serial.println("[link]   1. Pico flashed from env picolink (the SELF TEST never replies);");
+        Serial.println("[link]   2. GPIO1 -> Pico GP17, GPIO2 <- Pico GP16, and a common GND;");
+        Serial.println("[link]   3. that GPIO1/GPIO2 are not also wired to something else.");
+      }
+    }
+#endif
   }
 
   // Nothing to do here, and that is the design: the camera runs in the stream

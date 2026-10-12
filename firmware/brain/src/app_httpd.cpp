@@ -37,6 +37,7 @@
 #include "camera_pins.h"
 #include "esp_camera.h"
 #include "imu.h"
+#include "motor_link.h"
 
 namespace app {
 namespace {
@@ -242,11 +243,31 @@ p.lbl b{color:#cfe}
 border-radius:4px}
 .ibar i{position:absolute;top:0;bottom:0;left:50%;width:0;background:#4a9;
 border-radius:4px}
+.pad{display:grid;grid-template-columns:repeat(3,68px);gap:6px;justify-content:center;
+margin:10px auto}
+.pad button{width:68px;height:54px;padding:0;margin:0;font-size:20px;background:#2a3a4a}
+.pad button.stop{background:#6a2a2a;font-size:13px}
+.pad button.on{background:#3a6a8a}
+.pad span{display:block}
+input[type=range]{width:240px;vertical-align:middle}
+.warn{color:#e0a0b0;font-size:12px;max-width:440px;margin:8px auto}
 </style></head>
 <body>
 <h3>brain &mdash; ESP32-S3</h3>
 <img id="cam" alt="stream">
 <p><a href="/capture">snapshot</a><a href="/status">status</a></p>
+<p class="lbl">drive &mdash; <b>hold</b> a direction; releasing brakes</p>
+<div class="pad">
+<span></span><button id="bf">&#9650;</button><span></span>
+<button id="bl">&#9664;</button><button class="stop" onclick="ask('/stop')">STOP</button><button id="br">&#9654;</button>
+<span></span><button id="bb">&#9660;</button><span></span>
+</div>
+<p class="lbl">speed <b><span id="spdv">40</span>%</b> &mdash; or arrow keys / WASD</p>
+<p><input type="range" id="spd" min="0" max="100" value="40"></p>
+<p class="lbl" id="drivestat">link: ?</p>
+<p class="warn">Direction signs are unverified until the wheel mapping is
+confirmed on hardware (bring-up steps 4/5) &mdash; a swapped or reversed motor
+will make these buttons lie. Wheels off the ground for the first press.</p>
 <p>
 <button onclick="ask('/play?src=beeps')">beeps</button>
 <button onclick="ask('/play?src=clip')">sound file</button>
@@ -287,7 +308,7 @@ var LEVELS = [[10,'very low'],[20,'low'],[50,'medium'],[100,'high'],[200,'very h
 function ask(url){
   fetch(url, {method:'POST', cache:'no-store'})
     .then(function(r){return r.json();})
-    .then(show)
+    .then(function(j){ show(j); showLink(j); })
     .catch(function(e){console.log('request failed',e);});
 }
 
@@ -313,8 +334,113 @@ function show(j){
 }
 fetch('/status', {cache:'no-store'})
   .then(function(r){return r.json();})
-  .then(show)
+  .then(function(j){ show(j); showLink(j); })
   .catch(function(){});
+
+// --- drive ----------------------------------------------------------------
+// HOLD semantics, not click semantics: pointerdown starts, pointerup/cancel/
+// leave stops. While anything is held the page re-sends at 10 Hz, because the
+// brain's control watchdog commands BRAKE after 250 ms without a command -- so a
+// held control has to be continuously re-asserted, and that same property means
+// a Wi-Fi link that drops stops the car by itself.
+var held = {f:false,b:false,l:false,r:false};
+var driving = false;
+var driveBusy = false;
+
+function speedPermille(){
+  var v = parseInt(document.getElementById('spd').value, 10);
+  return (isNaN(v) ? 0 : v) * 10;   // slider 0..100 % -> 0..1000 per-mille
+}
+
+document.getElementById('spd').addEventListener('input', function(){
+  document.getElementById('spdv').textContent = this.value;
+});
+
+function sendDrive(){
+  var any = held.f || held.b || held.l || held.r;
+  if (!any) {
+    // Released: brake EXPLICITLY. Letting the watchdog do it would also work,
+    // but a quarter second of coasting on every release is not what "stop" means.
+    if (driving) { driving = false; ask('/stop'); }
+    return;
+  }
+  if (driveBusy) return;   // one request in flight, the same guard the IMU poll uses
+  driveBusy = true;
+
+  var s = speedPermille();
+  var th = (held.f ? s : 0) + (held.b ? -s : 0);
+  var turn = (held.l ? s : 0) + (held.r ? -s : 0);
+  driving = true;
+
+  fetch('/drive?th=' + th + '&turn=' + turn + '&twist=0',
+        {method:'POST', cache:'no-store'})
+    .then(function(r){return r.json();})
+    .then(function(j){ showLink(j); })
+    .catch(function(){})
+    .then(function(){ driveBusy = false; });
+}
+setInterval(sendDrive, 100);
+
+function bindHold(id, key){
+  var el = document.getElementById(id);
+  function down(e){
+    held[key] = true;
+    el.className = 'on';
+    if (e.cancelable) e.preventDefault();
+    // Pointer capture, so pointerup still arrives HERE if the finger slides off
+    // the button. Without it the car keeps driving with nothing held down.
+    if (el.setPointerCapture && e.pointerId !== undefined) {
+      try { el.setPointerCapture(e.pointerId); } catch(_) {}
+    }
+  }
+  function up(){ held[key] = false; el.className = ''; }
+  el.addEventListener('pointerdown', down);
+  el.addEventListener('pointerup', up);
+  el.addEventListener('pointercancel', up);
+  el.addEventListener('pointerleave', up);
+  el.addEventListener('contextmenu', function(e){ e.preventDefault(); });
+}
+bindHold('bf','f'); bindHold('bb','b'); bindHold('bl','l'); bindHold('br','r');
+
+var KEYS = {ArrowUp:'f',ArrowDown:'b',ArrowLeft:'l',ArrowRight:'r',
+            w:'f',s:'b',a:'l',d:'r',W:'f',S:'b',A:'l',D:'r'};
+window.addEventListener('keydown', function(e){
+  var k = KEYS[e.key]; if (!k) return; held[k] = true; e.preventDefault();
+});
+window.addEventListener('keyup', function(e){
+  var k = KEYS[e.key]; if (!k) return; held[k] = false; e.preventDefault();
+});
+// A key held down while the tab loses focus never gets its keyup. Clear
+// everything, and the next tick brakes.
+window.addEventListener('blur', function(){
+  held = {f:false,b:false,l:false,r:false};
+});
+
+function showLink(j){
+  if (!j || j.drive === undefined) return;
+  var p = j.pico || {};
+  var t = document.getElementById('drivestat');
+  if (!p.seen) {
+    t.textContent = 'link: no reply from the Pico (tx ' + j.link_tx + ', rx 0) \u2014 is it flashed with -e picolink?';
+    return;
+  }
+  t.textContent = 'link: ' + j.drive
+      + (j.control_timeout ? ' (watchdog -> BRAKE)' : '')
+      + ' | pico replied ' + (p.age_ms === null ? '?' : p.age_ms + ' ms ago')
+      + ', st 0x' + p.status.toString(16) + ', fault ' + p.fault
+      + ', rx ' + j.link_rx + ', crc ' + j.link_crc;
+}
+
+// A slow /status poll, so the link readout stays live while nothing is being
+// driven -- which is exactly when it is being looked at, trying to work out
+// whether the Pico is talking at all.
+function pollStatus(){
+  fetch('/status', {cache:'no-store'})
+    .then(function(r){return r.json();})
+    .then(function(j){ show(j); showLink(j); })
+    .catch(function(){});
+}
+setInterval(pollStatus, 1000);
 
 // --- IMU, live ------------------------------------------------------------
 // Polled at 15 Hz. That is a DISPLAY rate and nothing more: the firmware samples
@@ -473,14 +599,22 @@ esp_err_t stream_handler(httpd_req_t *req) {
 esp_err_t send_status_json(httpd_req_t *req) {
   sensor_t *s = esp_camera_sensor_get();
 
-  char json[512];
-  const int n = snprintf(
+  motor_link::State ls;
+  motor_link::state(&ls);
+
+  // Built in TWO snprintfs on purpose. The link adds a dozen more conversions,
+  // and a 40-argument format string is exactly where an argument/format
+  // mismatch hides -- splitting it keeps the new ones away from the old ones.
+  // The first part deliberately does not close the brace; the link fields are
+  // appended and then the object is closed.
+  char json[1024];
+  int n = snprintf(
       json, sizeof(json),
       "{\"heap\":%u,\"psram_free\":%u,\"ap_stations\":%u,\"clients\":%u,\"fps\":%u,"
       "\"framesize\":\"%s\",\"quality\":%d,\"brightness\":%d,\"contrast\":%d,"
       "\"saturation\":%d,\"hmirror\":%d,\"vflip\":%d,"
       "\"audio\":\"%s\",\"sample_rate\":%u,\"volume_milli\":%u,"
-      "\"led_auto\":%s,\"led\":[%u,%u,%u]}\n",
+      "\"led_auto\":%s,\"led\":[%u,%u,%u],",
       (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getFreePsram(),
       (unsigned)WiFi.softAPgetStationNum(), (unsigned)g_stream_clients,
       (unsigned)g_fps,
@@ -492,6 +626,38 @@ esp_err_t send_status_json(httpd_req_t *req) {
       (unsigned)(audio_volume() * 1000.0f + 0.5f),
       g_led_auto ? "true" : "false", (unsigned)g_led_r, (unsigned)g_led_g,
       (unsigned)g_led_b);
+
+  // A Pico that has never replied has no age. `null` is honest and parses; the
+  // raw 0xFFFFFFFF would be a number a client would believe.
+  char age[16];
+  if (ls.pico_seen) {
+    snprintf(age, sizeof(age), "%lu", (unsigned long)ls.pico_age_ms);
+  } else {
+    strcpy(age, "null");
+  }
+
+  if (n > 0 && n < (int)sizeof(json)) {
+    n += snprintf(
+        json + n, sizeof(json) - (size_t)n,
+        "\"drive\":\"%s\",\"control_timeout\":%s,\"duty\":[%d,%d,%d,%d],"
+        "\"link_tx\":%lu,\"link_rx\":%lu,\"link_crc\":%lu,"
+        "\"pico\":{\"seen\":%s,\"status\":%u,\"fault\":%u,\"age_ms\":%s,"
+        "\"uptime_ms\":%u}}\n",
+        motor_link::mode_name(ls.mode), ls.control_timeout ? "true" : "false",
+        (int)ls.duty[0], (int)ls.duty[1], (int)ls.duty[2], (int)ls.duty[3],
+        (unsigned long)ls.tx_frames, (unsigned long)ls.rx_replies,
+        (unsigned long)ls.rx_crc_errors, ls.pico_seen ? "true" : "false",
+        (unsigned)ls.pico_status, (unsigned)ls.pico_fault, age,
+        (unsigned)ls.pico_uptime_ms);
+  }
+
+  if (n < 0 || n >= (int)sizeof(json)) {
+    // Truncated JSON is not a partial answer, it is an unparseable one -- and on
+    // the page it shows up as the whole status panel silently going blank. Say so
+    // in the log rather than letting it look like a client bug.
+    Serial.println("[http] WARNING: /status JSON truncated -- raise json[]");
+    n = (int)sizeof(json) - 1;
+  }
 
   httpd_resp_set_type(req, "application/json");
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
@@ -633,6 +799,112 @@ esp_err_t control_handler(httpd_req_t *req) {
   return send_status_json(req);
 }
 
+// /drive -- the motors. Two shapes, chosen by which parameters are present:
+//
+//   /drive?th=..&turn=..&twist=..     the mixer  (per-mille, each +-1000)
+//   /drive?fl=..&rl=..&rr=..&fr=..    the raw four duties, bypassing the mixer
+//
+// Mixer inputs, all optional and defaulting to 0:
+//   th     throttle     + forward, - reverse
+//   turn   left/right   + added to the LEFT wheels, - to the right
+//   twist  front/rear   + added to the FRONT wheels, - to the rear
+//
+// *** THE SIGNS ARE car_control's, AND THEY ARE UNVERIFIED. *** The original car
+// used this same arithmetic with a comment calling +turn "left", while the duties
+// it produces (left wheels forward, right wheels back) rotate a car the other
+// way. Nobody has yet matched FL/RL/RR/FR to the actual wheels -- bring-up steps
+// 4/5 -- so treat every direction here as a coin flip until that is closed. The
+// ARITHMETIC is certain; which wheel moves is the open question, and the two
+// cannot be settled from the same evidence.
+//
+// EVERY request here refreshes the brain's own control watchdog. If they stop
+// arriving for 250 ms the brain commands BRAKE by itself (see motor_link.h), and
+// that is what makes a phone that sleeps or leaves Wi-Fi range a stopped car
+// rather than one that keeps driving at the last commanded duty.
+esp_err_t drive_handler(httpd_req_t *req) {
+  char params[128];
+  params_load(req, params, sizeof(params));
+
+  // All four are parsed before any is tested. `||` would short-circuit and leave
+  // the later ones unread, turning a complete raw request into a misleading
+  // "raw mode needs all four".
+  int fl = 0, rl = 0, rr = 0, fr = 0;
+  const bool has_fl = param_int(params, "fl", &fl);
+  const bool has_rl = param_int(params, "rl", &rl);
+  const bool has_rr = param_int(params, "rr", &rr);
+  const bool has_fr = param_int(params, "fr", &fr);
+
+  if (has_fl || has_rl || has_rr || has_fr) {
+    if (!(has_fl && has_rl && has_rr && has_fr)) {
+      return httpd_resp_send_err(
+          req, HTTPD_400_BAD_REQUEST,
+          "{\"error\":\"raw mode needs all four of fl, rl, rr, fr (per-mille)\"}");
+    }
+    const int16_t duty[proto::MOTOR_COUNT] = {(int16_t)fl, (int16_t)rl,
+                                              (int16_t)rr, (int16_t)fr};
+    motor_link::drive_raw(duty);
+    // Logged for the same reason /play is: it splits "the car did not move" into
+    // never arrived vs arrived and commanded nothing.
+    Serial.printf("[http] /drive raw fl=%d rl=%d rr=%d fr=%d\n", fl, rl, rr, fr);
+    return send_status_json(req);
+  }
+
+  int th = 0, turn = 0, twist = 0;
+  const bool has_th = param_int(params, "th", &th);
+  const bool has_turn = param_int(params, "turn", &turn);
+  const bool has_twist = param_int(params, "twist", &twist);
+  if (!(has_th || has_turn || has_twist)) {
+    return httpd_resp_send_err(
+        req, HTTPD_400_BAD_REQUEST,
+        "{\"error\":\"use th/turn/twist, or all four of fl/rl/rr/fr (per-mille)\"}");
+  }
+
+  // Note the argument order: motor_link::drive() takes the MIXER's order
+  // (throttle, front_rear, left_right), so twist and turn swap places here. That
+  // is also why the URL names are not `fr` and `lr`: `fr` already means
+  // "front right" in raw mode, and a parameter that means two things depending on
+  // which other parameters are present is a bug waiting to be written.
+  motor_link::drive((int16_t)th, (int16_t)twist, (int16_t)turn);
+  Serial.printf("[http] /drive th=%d turn=%d twist=%d\n", th, turn, twist);
+  return send_status_json(req);
+}
+
+// /stop[?mode=brake|coast|disable]
+//
+// BRAKE is the default because a stop that coasts is not a stop -- the car keeps
+// rolling, which is the thing the whole fail-safe chain exists to prevent. COAST
+// and DISABLE are offered because sometimes that is what is wanted: coast to push
+// the car by hand, disable to park it with nothing energised at all.
+//
+// The three differ in a way worth knowing when debugging: BRAKE holds the motors
+// shorted (stops fast, draws nothing unless the wheels turn), COAST leaves the
+// outputs high-Z but the drivers enabled, and DISABLE drops the Pico's STBY so
+// the drivers themselves are off.
+esp_err_t stop_handler(httpd_req_t *req) {
+  char params[64];
+  params_load(req, params, sizeof(params));
+
+  char mode[16];
+  const bool given = param_str(params, "mode", mode, sizeof(mode));
+
+  if (!given || strcmp(mode, "brake") == 0) {
+    motor_link::brake();
+    Serial.println("[http] /stop -> BRAKE");
+  } else if (strcmp(mode, "coast") == 0) {
+    motor_link::coast();
+    Serial.println("[http] /stop -> COAST");
+  } else if (strcmp(mode, "disable") == 0) {
+    motor_link::disable();
+    Serial.println("[http] /stop -> DISABLE (STBY low at the Pico)");
+  } else {
+    return httpd_resp_send_err(
+        req, HTTPD_400_BAD_REQUEST,
+        "{\"error\":\"mode must be brake, coast or disable\"}");
+  }
+
+  return send_status_json(req);
+}
+
 // --- registration ---------------------------------------------------------
 struct Route {
   const char *uri;
@@ -683,9 +955,11 @@ esp_err_t start_on_port(uint16_t port, const Route *routes, size_t n) {
   // not about the socket you asked for. Deriving it from `port` keeps the two
   // instances distinct and needs no second constant to forget.
   config.ctrl_port = 32768 + port;
-  // 8 was the exact number of control routes before /imu arrived; the margin is
-  // deliberate, because httpd_start() fails outright if the list outgrows this.
-  config.max_uri_handlers = 12;
+  // 12 routes live on port 80 as of the link work (/, /capture, /status, /imu,
+  // /play x2, /control x2, /drive x2, /stop x2), so the old value of 12 is now
+  // exactly the count -- and httpd_start() fails outright if the list outgrows
+  // this, at boot, with a message about handlers rather than about this number.
+  config.max_uri_handlers = 16;
   // Recycle a socket if all of them are in use. Without this, one abandoned
   // browser tab can make the camera look dead to every later client.
   config.lru_purge_enable = true;
@@ -693,6 +967,17 @@ esp_err_t start_on_port(uint16_t port, const Route *routes, size_t n) {
   config.stack_size = 8192;
   config.recv_wait_timeout = 5;
   config.send_wait_timeout = 5;
+  // *** PIN THIS SERVER TO CORE 0. ***
+  // HTTPD_DEFAULT_CONFIG() leaves core_id = tskNO_AFFINITY, so a server task may
+  // land on core 1 -- the core the plan reserves for the control/link work, at
+  // the SAME priority 5. It was harmless while core 1 only held the 200 Hz IMU
+  // sampler; it stops being harmless now that a 100 Hz frame task also has to be
+  // on time, because two equal-priority tasks on one core round-robin and the
+  // frame schedule is what the Pico's dead-man is measured against. Pinning the
+  // servers to core 0 is the fix the core map in /memories/repo/esp32-brain.md
+  // asks for before the control loop arrives. There are TWO instances, so both
+  // get it -- this function starts both.
+  config.core_id = 0;
 
   httpd_handle_t server = nullptr;
   esp_err_t res = httpd_start(&server, &config);
@@ -719,6 +1004,13 @@ int server_start() {
       // that treats this as a REST endpoint will use POST.
       {"/control", HTTP_GET, control_handler},
       {"/control", HTTP_POST, control_handler},
+      // The motors. Same reasoning as /play and /control: POST is not cached, and
+      // a cached GET of a driving command would be a command the board never
+      // heard about -- which on the car is indistinguishable from a dead link.
+      {"/drive", HTTP_GET, drive_handler},
+      {"/drive", HTTP_POST, drive_handler},
+      {"/stop", HTTP_GET, stop_handler},
+      {"/stop", HTTP_POST, stop_handler},
   };
   // /stream is NOT in the list above, deliberately.
   static const Route kStreamRoutes[] = {

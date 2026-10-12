@@ -9,7 +9,9 @@
 //                        docs/circuit-plan.md section 11.
 //
 //   LINK               : the real job -- parse frames from the S3 and drive the
-//                        motors, with the 100 ms dead-man. Stage 2.
+//                        motors, with the 100 ms dead-man. Implemented; the
+//                        whole thing lives in link.h / link.cpp and this mode
+//                        is just the bring-up and the banner.
 //
 // Serial is USB CDC on this core, so it never touches UART0 on GP16/GP17,
 // which belongs to the link. Debug output and the link cannot collide.
@@ -26,6 +28,7 @@
 #include <hardware/gpio.h>
 
 #include "log.h"
+#include "link.h"
 #include "motors.h"
 #include "protocol.h"
 #include "status_led.h"
@@ -187,13 +190,38 @@ int main() {
   status_led::on();
 
   stdio_init_all();
-  sleep_ms(1500);
+
+  // Motors BEFORE the USB wait, and the order is load-bearing: motors::init()
+  // is what drives STBY low and leaves the twelve logic lines parked. The car
+  // must be incapable of moving from the instant the firmware starts, not 1.5 s
+  // later when a USB host happens to attach. Only the banner is waiting.
   motors::init();
-  logf("pico_body: link mode not implemented yet (stage 2).\n");
+
+  sleep_ms(1500);
+
+  logf("\n");
+  logf("pico_body  --  LINK mode (the real job)\n");
+  logf("=====================================\n");
+  logf("UART0          : TX GP16 -> S3 GPIO2, RX GP17 <- S3 GPIO1\n");
+  logf("link           : 921600 8N1, no flow control, 13-byte frames\n");
+  logf("dead-man       : %u ms without a MOTION command -> STBY low\n",
+       (unsigned)link::kDeadmanMs);
+  logf("slew limit     : +-%d permille per frame\n", (int)link::kSlewPerFrame);
+  logf("reply          : 11 bytes at 10 Hz back to the S3\n");
+  logf("STBY           : LOW -- drivers high-Z until the first motion frame\n");
   logf("status LED     : %s\n",
        STATUS_LED_PRESENT ? "GP25 lit solid (plain Pico)"
                           : "ABSENT (Pico W: the LED belongs to the radio)");
-  logf("Set -DPICO_MODE_SELFTEST=1 in platformio.ini to run the self test.\n");
+  logf("debug log      : this USB port only, so it never touches the link\n");
+  logf("\n");
+  logf("PING does NOT feed the dead-man: a brain that only pings can never hold\n");
+  logf("the last commanded duty. See note_motion() in link.cpp.\n");
+  logf("\n");
+
+  link::run();  // never returns
+
+  // Not reached. The SDK has no runtime to return to, but main() must not fall
+  // off the end.
   while (true) {
     sleep_ms(1000);
   }

@@ -84,8 +84,9 @@ Pico does, and it costs two S3 pins (the UART link) to hand them over.
 
 | Function | GPIO | Header | Wire notes |
 | --- | --- | --- | --- |
-| UART TX → Pico RX | **43** | right #1 | U0TXD; 3.3 V, no level shifting |
-| UART RX ← Pico TX | **44** | right #2 | U0RXD |
+| **UART1 TX → Pico RX** | **1** | right #3 | **the link.** 921600 8N1, 3.3 V, no level shifting. **Moved here from `43` on 2026-10-11 — see §2.3** |
+| **UART1 RX ← Pico TX** | **2** | right #4 | the link's other half |
+| USB **console** | 43, 44 | right #1, #2 | `U0TXD`/`U0RXD`. **NOT spare on this carrier:** the USB-C port is a bridge wired to these two pins, so this *is* the serial log. See §2.3 |
 | I²C SCL → BMI160 | **42** | right #5 | pull-up is **on the module** (3.9 kΩ) — fit none (§5). Moved here from `2` on 2026-10-11, §2.4 |
 | I²C SDA → BMI160 | **41** | right #6 | pull-up is **on the module** (3.9 kΩ) — fit none (§5). Moved here from `1` |
 | I²S `LRCK` / `WS` | **45** | right #14 | direct — the DAC board has its own series resistors |
@@ -94,7 +95,7 @@ Pico does, and it costs two S3 pins (the UART link) to hand them over.
 | **LED strip data** | **48** | right #15 | RMT channel 1; 330–470 Ω series (`R6`), **and a level shifter** — a 5 V strip's `Vih` is `0.7 × VDD` = 3.5 V (§2.1) |
 | on-board WS2812 | (**48**) | right #15 | **shares the strip's net** — no buffer, so the on-board LED mirrors the strip's first pixel and is a usable status light again (§2.1) |
 | spare → **microSD** | 38, 39, 40 | right #9–#7 | the on-board slot: `CMD` / `CLK` / `DATA` — freed by the I²S move |
-| freed by the I²C move | **1, 2** | right #3, #4 | both are **`ADC1_CH0` / `ADC1_CH1`**, so they are analog-capable spares (§2.4) |
+| freed by the I²C move | ~~1, 2~~ | right #3, #4 | **spent again as the link** — both were `ADC1_CH0` / `ADC1_CH1`, so the cost is the S3's last two analog-capable spares (§2.3) |
 | ~~spare → JTAG~~ | — | — | **gone:** JTAG needs `39`–`42` as a set, and `41`/`42` are I²C now (§2.4) |
 | **not used** | 3, 46 | left #12, left #13 | left floating — see §2.2 |
 | **not used** | 0, 19, 20 | right #13, #19, #18 | BOOT button + USB, untouched |
@@ -198,14 +199,34 @@ they hold. **No external resistors are needed** — if you want belt-and-braces,
 > another chip drive `46` high at reset**, or the BOOT button stops working. This
 > plan leaves `46` alone, which is exactly why I²S moved to the right row.
 
-### 2.3 Two things to expect on `43` / `44`
+### 2.3 The link moved off `43` / `44` — those pins are the console
 
-* The ROM bootloader prints its banner on `43` at 115200 during every boot. The
-  Pico will see ~30 bytes of garbage before the app starts — the frame header +
-  CRC handle that, no special code needed.
-* The S3's ROM listens on `44` for download-mode handshakes. The Pico's TX is
-  idle-high, which is what an unconnected line looks like, so there is no risk
-  from the link itself.
+**The link is on `GPIO1` (TX) and `GPIO2` (RX), i.e. UART1.** This section used to
+describe expecting a ROM banner on `43` and download handshakes on `44`; that reasoning
+was right about the pins and wrong about the conclusion, which is that **they are not
+available.**
+
+* **This carrier's USB-C port goes through a bridge to `43`/`44`, which is UART0.** The
+  boot log arrives over exactly those two pins, so a link there would cost the serial log
+  for the whole of bring-up. Measured, twice: a build with `-DARDUINO_USB_CDC_ON_BOOT=1`
+  (i.e. asking for a native-USB console instead) produced **no output anywhere**, which is
+  what settles it.
+* Nothing electrical depended on the choice. The ESP32-S3's **GPIO matrix routes a UART to
+  any pin**, so this was always a wiring decision rather than a peripheral limit — the same
+  argument §2.1 and §2.4 already make for I²S and I²C.
+* **The cost is `1` and `2`,** which the I²C move (§2.4) had just freed. Both are
+  `ADC1_CH0`/`ADC1_CH1`, so the S3 now has **no spare analog inputs** — the battery divider
+  stays on the Pico's `GP26`.
+* **A gain, and not a small one: the boot garbage is gone.** The ROM bootloader banners on
+  UART0 only, so with the link on UART1 the Pico never sees it. The old "~30 bytes of
+  garbage every boot, header + CRC handles it" note no longer describes this build at all
+  — the CRC still has to handle noise, and does (`proto::SyncHunt`), but not this.
+* The Pico's side is unchanged: **`GP16` TX → S3 `GPIO2`**, **`GP17` RX ← S3 `GPIO1`**,
+  crossed, plus a common ground (§3).
+
+> ⚠️ **Do not "restore" `43`/`44` to the link.** The only way to do it is to give up the
+> serial console, and every diagnosis in `firmware/brain/README.md` was made by reading
+> that log.
 
 ### 2.4 Why I²C moved to `41` / `42`
 
@@ -260,8 +281,8 @@ between that slot and JTAG stops mattering, because JTAG is no longer in the run
 | **GP13** | #2 `BIN2` | plain GPIO | `JP2-6` |
 | **GP14** | #2 `BIN1` | plain GPIO | `JP2-5` |
 | **GP15** | #2 `PWMB` | PWM slice 7B | `JP2-7` |
-| **GP16** | **UART0 TX** → S3 `44` | UART0 (F2) | |
-| **GP17** | **UART0 RX** ← S3 `43` | UART0 (F2) | |
+| **GP16** | **UART0 TX** → S3 `GPIO2` | UART0 (F2) | the link's other half (§2.3) |
+| **GP17** | **UART0 RX** ← S3 `GPIO1` | UART0 (F2) | |
 | free | GP18–GP22 | | 5 pins — encoders, anything |
 | **GP25** | on-board status LED | plain GPIO | **plain Pico only** — on a Pico W the SDK makes this the radio's SPI chip select (`CYW43_DEFAULT_PIN_WL_CS`) instead. Not on the header, so it costs no connector pin; lit by firmware as the "powered and running" light (§10.2) |
 | free | GP26, GP27 | ADC0, ADC1 | battery voltage / current sense |
@@ -423,7 +444,7 @@ of the link, so you could push to 500 Hz if a loop needs it.
 Duty units are **permille, −1000 … +1000**. Sign is direction, magnitude is PWM.
 `0` means coast.
 
-### 4.2 Pico → S3 reply (10 bytes, optional)
+### 4.2 Pico → S3 reply (11 bytes)
 
 | Offset | Size | Field |
 | --- | --- | --- |
@@ -434,10 +455,20 @@ Duty units are **permille, −1000 … +1000**. Sign is direction, magnitude is 
 | 5 | 1 | fault: 0 OK · 1 CRC errors · 2 timeout event · 3 hardware fault pin |
 | 6 | 2 | uptime ms, low 16 bits |
 | 8 | 2 | reserved / encoder counts later |
-| — | 1 | CRC-8 over bytes 2–9 |
+| 10 | 1 | CRC-8 over bytes 2–9 |
 
-The S3 can ignore this entirely for v1. It exists so that "is the body alive?"
-is answerable without a scope.
+That is **11** bytes, offsets `0`–`10`. This heading said "10 bytes" until 2026-10-11,
+which is exactly the sort of off-by-one that would have become a wrong window length in
+the parser — `protocol.h` now declares `REPLY_LEN` and `test_link.cpp` asserts
+`REPLY_LEN == ROFF_CRC + 1` so the two cannot disagree again.
+
+**Implemented, not "optional for v1".** `protocol.h` carries `reply_ok()` and
+`reply_decode()` so both ends validate the reply with the same constants (it has a
+different length *and* a different CRC range from the frame — the kind of near-miss that
+gets validated with the wrong constant), and `motor_link.cpp` parses it into `/status` and
+the heartbeat. It earns its place: if the S3 logs `FAULT_TIMEOUT`, the Pico's dead-man
+fired, which means the S3 stopped SENDING frames — a completely different bug from a dead
+Pico, and not one to go looking for on the Pico side.
 
 ### 4.3 Timing
 
@@ -445,10 +476,40 @@ is answerable without a scope.
 * Pico's dead-man timeout: **100 ms** = 10 missed frames. Tunable to 200 ms if you
   see spurious cutouts — but find out *why* first, because a cutout means the S3's
   loop stalled.
-* Pico applies an optional **slew limit** as a safety net: no more than ±100
-  permille change per frame (full range in 100 ms). This exists so that one corrupt
-  command that passes CRC cannot slam the motors. Set it to 0 (disabled) if the
-  S3's own ramping is already fast enough.
+* Pico applies a **slew limit**: no more than ±100 permille change per frame (full
+  range in 100 ms). This exists so that one corrupt command that passes CRC cannot slam
+  the motors. **Enabled 2026-10-11** — it applies to `SET` frames only; `BRAKE`, `COAST`
+  and `DISABLE` are safety commands and are deliberately not ramped.
+* Pico replies at **10 Hz** (11 bytes, 110 B/s). Slow on purpose: the S3 can parse it
+  whenever it likes without needing a queue.
+
+### 4.4 Three things the frame format does not say — settled in `protocol.h`
+
+Both ends must agree on these, and neither can infer the answer from the bytes:
+
+* **Which types feed the dead-man.** `SET` / `BRAKE` / `COAST` / `DISABLE` do. **`PING`
+  does not**, which reads its description literally ("liveness only; does not move
+  anything"). If `PING` refreshed the timer, a brain that kept pinging but stopped
+  sending duties would hold the last commanded duty *forever* — the timer running and
+  protecting nothing. The reply still reports `PING` as **link-good**, because "is the S3
+  talking" and "does the S3 still own the motors" are different questions.
+* **`DISABLE` is not latched.** It is a frame, not a mode: the Pico applies it and keeps
+  listening, so the next `SET` re-arms the drivers. A latch would need a re-enable message
+  this protocol does not have, which would make `DISABLE` a one-way trip whose only exit
+  was a reboot. The "stay off" intent belongs to the brain, which is the end that knows
+  what it wants.
+* **A false accept is possible, and is bounded.** CRC-8 is 8 bits, so a random window
+  that happens to begin with the sync pattern passes roughly **1 time in 256**.
+  `tools/test_link.cpp` measures one, and it is a property of the CRC that §4 chose, not a
+  bug to fix here. What bounds the damage is the slew limit: a false accept can command at
+  most one frame, i.e. ±100 permille, until the next real frame arrives 10 ms later.
+
+**And one guard the Pico cannot provide at all.** The dead-man covers the brain crashing,
+rebooting or the wire coming off. It does **not** cover the far more likely failure: the
+brain is perfectly healthy and still sending, but the phone has slept or left Wi-Fi range —
+so the brain keeps dutifully sending the last duty and the car keeps driving with nobody
+holding a control. `motor_link.cpp` therefore commands **`BRAKE` if no `/drive` request
+arrives for 250 ms.**
 
 ---
 
@@ -1047,7 +1108,7 @@ port down.
       the `3V3` pin from the S3 (§7.2). Either USB port then powers both boards (§7.3).
 - [ ] Both regulator outputs set and **measured** before anything is connected:
       LM2596 → 5.00 V, XL4015 → 8.00 V. They ship at random settings.
-- [ ] Pico `GP16` → S3 `GPIO44`, Pico `GP17` ← S3 `GPIO43` (crossed), **plus a
+- [ ] Pico `GP16` → S3 `GPIO2`, Pico `GP17` ← S3 `GPIO1` (crossed), **plus a
       ground wire between the two boards**. Put a **1 kΩ in series** on each of the
       two lines: if one board is powered and the other is not, that resistor limits
       the current injected through the unpowered chip's input protection diodes to
@@ -1132,8 +1193,12 @@ version is cheaper and keeps the driver alive; the `VM` version is unconditional
 ### 10.1 ESP32-S3 (Arduino-ESP32)
 
 * Build flags from `esp32-cam.md` §9: `board_build.flash_mode = qio`,
-  `memory_type = qio_opi`, `ARDUINO_USB_CDC_ON_BOOT=1`. Remember `Serial` then means
-  USB CDC, which is what frees `43`/`44` for the link.
+  `memory_type = qio_opi`, **`ARDUINO_USB_CDC_ON_BOOT=0`**.
+  > **CORRECTED 2026-10-11.** This bullet used to say `=1`, with the claim that "USB CDC
+  > is what frees `43`/`44` for the link". That is false on this carrier: the USB-C port
+  > is a bridge wired to `43`/`44`, so `=1` moves the console to a native USB that has
+  > nothing on it and produces **no output at all**. `43`/`44` are therefore not free, and
+  > the link is on **UART1 `GPIO1`/`GPIO2`** (see §2.3).
 * **Core split.** WiFi, the camera task and audio on core 0; the control task on
   core 1: `xTaskCreatePinnedToCore(control_task, "ctrl", 4096, NULL, 5, NULL, 1)`.
   Priority 5 preempts the Arduino `loop()` task (priority 1).
@@ -1168,7 +1233,11 @@ version is cheaper and keeps the driver alive; the `VM` version is unconditional
 * Main loop: parse bytes into a frame buffer, and on a complete valid frame update
   the twelve logic lines and the four levels, then reset the deadline
   `last_frame_us = time_us_64()`. Compare `time_us_64() - last_frame_us > 100000`
-  each pass to trigger the dead-man.
+  each pass to trigger the dead-man. **Implemented 2026-10-11** in
+  `firmware/pico_body/src/link.cpp` — the frame hunt is `proto::SyncHunt` in
+  `protocol.h`, shared with the S3 end so the two cannot drift.
+* Apply the slew limit to `SET` frames **only**. `BRAKE`/`COAST`/`DISABLE` are safety
+  commands and must never be ramped; `PING` changes nothing at all (§4.4).
 * **On a sign change, order matters:** set the PWM level to 0, change the direction
   pins, then set the new level. Reversing the `IN` pins while the PWM is high puts a
   brief full-voltage reverse pulse through the motor and the supply.
@@ -1197,7 +1266,7 @@ Do not connect everything and hope. Each step is independently verifiable:
 | 2 | + PCM5102A and amp | test tone is clean, and still clean while the camera streams |
 | 3 | + BMI160 | **`0x69`** answers with `WHO_AM_I = 0xD1`; gyro reads ~0 when still |
 | 4 | Pico alone on a bench supply, **no motors** | the on-board LED lights within a fraction of a second of power-up; all 12 logic lines idle low, `STBY` low at power-up; frames from a USB-TTL adapter produce 20 kHz on a scope |
-| 5 | + the UART link | 100 Hz frames confirmed; **pull the TX wire and watch `STBY` drop within 100 ms** |
+| 5 | + the UART link | ✅ **2026-10-11** — 100 Hz frames confirmed, `crc 0` both ways, and the dead-man **provoked** by stopping the sender: `timeouts` 0 → 1 with `STBY` low within 100 ms. **The literal wire-pull is still untested** (a floating input can inject noise; a stopped sender cannot) |
 | 6 | + one ROB-14450 and one motor, supply current-limited to 0.5 A | forward / reverse / coast / brake all correct; motor is silent |
 | 7 | + all four motors, wheels off the ground | four independent duties; no brownout when all four slam from 0 to 100 % |
 | 8 | + full load, driving | camera streaming + WiFi + audio + driving, watching for resets |
@@ -1218,7 +1287,21 @@ the rest of the plan is decoration.
 >   ramp. The on-board `GP25` LED is the indicator now: a reset shows as the LED going
 >   dark with the banner reprinting behind it.
 >
-> Step 5 itself is untouched: no frames, no dead-man.
+> Step 5 was closed on 2026-10-11 with both boards on a bench and wired to each other: the
+> brain sent 100 Hz frames with zero CRC errors and received 10 Hz replies, and the dead-man
+> was **provoked deliberately** — the S3 was held in its ROM bootloader so the frames
+> stopped, and the Pico logged `*** DEAD-MAN ... ***` with `timeouts` going 0 → 1. It is
+> one-shot: `timeouts` stayed at 1 when frames resumed.
+>
+> What that does **not** cover, and should not be read into it:
+> * **the literal wire-pull.** A stopped sender and a pulled wire both look like "no bytes",
+>   so the timer logic is identical — but a *floating* input can inject **noise**, and noise
+>   could in principle produce a false-accept frame that refreshes the timer. The cheap test
+>   is still worth doing: pull the TX wire and confirm `STBY` drops within 100 ms.
+> * **the slew limit.** It applies only to `SET` frames, and no `SET` frame with a non-zero
+>   duty has ever been sent. Its clamp is covered by the host tests; its effect on real
+>   motors is not.
+> * **motion.** `STBY` is LOW and nothing has been commanded to move.
 
 ---
 
@@ -1276,9 +1359,11 @@ the rest of the plan is decoration.
    its signals (`47` `BCK` / `21` `DIN` / `45` `LRCK`, §2.1). So the strip and the
    on-board WS2812 share one net again, and the on-board LED is a usable status light.
    The 330 Ω series resistor is unchanged throughout; only the pin moved.
-6. **Slew limit:** enable the Pico-side ±100 permille/frame clamp, or trust the S3's
-   own ramping? (Recommendation: leave it on. It costs nothing and it is the only
-   thing standing between a bad frame and a full-throttle lurch.)
+6. ✅ **Slew limit:** **decided 2026-10-11 — ON**, ±100 permille per frame, and it
+   applies to `SET` frames only. It costs nothing and it is the only thing standing
+   between a bad frame and a full-throttle lurch. Note it is not only a corruption guard:
+   it is also what makes a corrupt-but-CRC-valid frame (§4.4) a 10 ms twitch instead of
+   a reversal.
 7. ✅ **microSD:** resolved — moving I²S off `40` puts `38`/`39`/`40` back in play as
    the on-board slot's `CMD`/`CLK`/`DATA`. Wiring it up is now a free choice rather
    than something the pin map forbids. The only conflict left is internal to the S3:

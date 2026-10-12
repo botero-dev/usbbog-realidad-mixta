@@ -11,3 +11,7 @@ svg/
 
 # KiCad per-user UI state (window positions, last-used layers...).
 *.kicad_prl
+
+# KiCad's project lock file. Left behind by a GUI session, and regenerated as
+# needed — it encodes no design information, so it must not be committed.
+*.lck

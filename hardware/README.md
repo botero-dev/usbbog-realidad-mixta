@@ -147,6 +147,22 @@ around in KiCad cannot break connectivity.
 `GLUE` band: `S3_TXD` → `R1` → `LINK_RX_PICO` is one wire pair, so you can always
 see which side of a resistor you are on.
 
+**The UART series `1 kΩ` (`R1`, `R2`) is not for signal integrity.** It is
+transparent at 921600 baud (1 kΩ against ~10–50 pF of pad and cable capacitance is
+~10–50 ns of edge, versus a 1.085 µs bit). It is there for the case where **one
+board is powered and the other is not**: every GPIO has a protection diode from the
+pin up to its own `VDD` rail, so driving an unpowered board's RX pin forward-biases
+that diode and feeds current into its rail — *phantom powering*, which can half-start
+the "off" board. With 1 kΩ the injected current is capped at 3.3 V / 1 kΩ ≈ **3 mA**,
+below what either chip needs to run, so it cannot bring the board up. **One per line,
+because either board can be the unpowered one.** In this build both boards share the
+5 V rail, so it only matters on the bench — running one board alone, or one of them
+browning out while the other is live.
+
+> Do not confuse it with `R5`, which is also 1 kΩ and has nothing to do with any of
+> this: it lets the optional E-stop switch short the `STBY` node to ground while
+> sinking only 3.3 mA, instead of shorting a GPIO output directly.
+
 **Spares are no-connects.** A pin with a no-connect flag is intentional. With both
 MCU symbols drawn as the real boards this is now a visible map of what *not* to
 touch: the 14 camera pins on the ESP32's left row, the dead PSRAM pins, BOOT, USB,
@@ -165,8 +181,9 @@ The net table in `wiring.md` should match `circuit-plan.md` §3 and §4. Spot ch
 
 | Plan says | Schematic net |
 | --- | --- |
-| S3 `GPIO43` → R → Pico `GP16`/`GP17` | `S3_TXD` → `R1` → `LINK_RX_PICO` (`U2.22`, GP17) |
-| Pico `GP16` → R → S3 `GPIO44` | `PICO_TXD` (`U2.21`, GP16) → `R2` → `LINK_RX_S3` (`U1.2`) |
+| S3 `GPIO1` → R → Pico `GP17` | `S3_TXD` (`U1.R3`, GPIO1) → `R1` → `LINK_RX_PICO` (`U2.22`, GP17) |
+| Pico `GP16` → R → S3 `GPIO2` | `PICO_TXD` (`U2.21`, GP16) → `R2` → `LINK_RX_S3` (`U1.R4`, GPIO2) |
+| ~~S3 `GPIO43` / `GPIO44`~~ are **not** the link | `U1.R1` / `U1.R2` (`U0TXD` / `U0RXD`) are **deliberate no-connects**. On this carrier the USB-C port's bridge is wired to exactly these pins, so they are the serial console; the link moved off them on 2026-10-11 (plan §2.3). Cost of the move: `GPIO1`/`GPIO2` were `ADC1_CH0`/`CH1`, so the S3 has no spare analog inputs |
 | BMI160 on `GPIO42` (`SCL`) / `GPIO41` (`SDA`), addr **0x69** | **Four wires only**: `+5V` → `U5.VIN`, GND, `I2C_SDA` → `U5.SDA`, `I2C_SCL` → `U5.SCL`, from `U1.R6` / `U1.R5`. `U5.CS` and `U5.SA0` are **left open** — the module pulls both high, so `CS` gives I²C mode and the address is **0x69**, not 0x68 |
 | `I²S` `45`/`47`/`21` — signals permuted 2026-10-11 | `I2S_BCK` (from `U1.R16` / `GPIO47`) → `U6.2`, `I2S_DIN` (`U1.R17` / `GPIO21`) → `U6.3`, `I2S_LRCK` (`U1.R14` / `GPIO45`) → `U6.4` — all **direct**, no external series parts. Header order maps to pads 4/2/3, so the ribbon **crosses** |
 | `STBY` on `GP28` via 1 kΩ | `STBY_PICO` (`U2.34`) → `R5` → `MOT_STBY` → `U3.JP2-4`, `U4.JP2-4`, `SW1.1` |
