@@ -9,7 +9,7 @@ propio `platformio.ini`; no se compilan juntos.
 | --- | --- | --- |
 | `car_control/` | ESP32 clásico (`esp32dev`) | El sketch original: `motor.h` + el bucle de mezcla. Lo compila el `platformio.ini` de la **raíz**. **Ya no se usa en el coche**: el S3 no toca ningún pin de motor, y su lógica de mezcla se ha portado a `brain/include/mixer.h` (plan §10.3). Se conserva como referencia. |
 | `brain/` | ESP32-S3-CAM (N16R8) | El *cerebro*: cámara, audio, IMU, SoftAP y **el enlace que gobierna los motores** (UART1 → Pico, `-- 100 Hz). La mezcla vive aquí. |
-| `pico_body/` | Raspberry Pi Pico (RP2040) | El *cuerpo*: recibe las consignas por UART y genera 4 PWM + 8 líneas de dirección + `STBY`, con un *dead-man* de 100 ms. |
+| `pico_body/` | Raspberry Pi Pico (RP2040) | El *cuerpo*: recibe las consignas por UART y genera 4 PWM + 8 líneas de dirección + `STBY`, con un *dead-man* de 200 ms. |
 
 `brain/` y `pico_body/` son proyectos **autónomos** (como `network-test/`), así que se
 compilan nombrando la carpeta:

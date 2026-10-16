@@ -65,6 +65,18 @@ void set_command(uint8_t mode, const int16_t* duty) {
   for (uint8_t i = 0; i < proto::MOTOR_COUNT; ++i) {
     g_duty[i] = duty ? duty[i] : 0;
   }
+  // The wheels a caller names are not the channels they land on: the left and right
+  // driver boards are crossed on this car (measured 2026-10-12, see mixer::to_wire()).
+  // Applied HERE, in the one function every command passes through, so drive(),
+  // drive_raw() and anything added later cannot forget it -- the same argument the LED
+  // brightness cap uses.
+  //
+  // Consequence worth knowing: g_duty[] -- and so the `duty[]` in /status and in the
+  // heartbeat -- is in CHANNEL order, which is what the Pico actually applies, while the
+  // `[http] /drive` log line keeps the caller's names, which is what they asked for. Two
+  // views on purpose: the log answers "what did I ask for", /status answers "what is on
+  // the wire".
+  mixer::to_wire(g_duty);
   g_last_cmd_ms = millis();
   portEXIT_CRITICAL(&g_mux);
 }

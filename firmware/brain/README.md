@@ -308,14 +308,17 @@ The ESP32-S3's GPIO matrix routes a UART to any pin, so the link moved to **UART
 
 ### Two things the Pico's dead-man does NOT cover
 
-The Pico drops `STBY` if frames stop arriving for 100 ms. That covers the brain crashing,
+The Pico drops `STBY` if *motion commands* stop arriving for 200 ms (`link.h`'s
+`kDeadmanMs`; raised from 100 ms on 2026-10-12). That covers the brain crashing,
 rebooting, or the TX wire coming off — and nothing else.
 
 **It does not cover a lost client.** If the phone sleeps, leaves Wi-Fi range, or the page
 is closed, the brain is perfectly healthy and keeps sending the last duty it was told: the
 car keeps driving, at speed, with nobody holding a control, and the Pico cannot tell the
 difference — from its side nothing has changed. So the brain has its own watchdog:
-**no `/drive` for 250 ms → `BRAKE`** (`kControlTimeoutMs` in `motor_link.h`). Deliberately
+**no `/drive` for 400 ms → `BRAKE`** (`kControlTimeoutMs` in `motor_link.h`; raised from
+250 ms on 2026-10-12, because 250 was only 2.5× the page's re-send interval and jitter was
+tripping it with a button still held). Deliberately
 brake and not coast, because a coasting car keeps rolling, and the point of the watchdog is
 to stop it.
 
@@ -333,12 +336,33 @@ slides off a button never delivers `pointerup`, and the car would keep driving w
 held down. `blur` clears everything for the same reason — a key held while the tab loses
 focus never gets its `keyup`.
 
-> ⚠️ **The direction signs are UNVERIFIED.** They are `car_control`'s, kept exactly, and
-> that code's own comment called `+turn` "left" while producing duties (left wheels
-> forward, right wheels back) that rotate a car the other way. Which channel is which wheel
-> is bring-up steps 4/5 and is **still open** — the arithmetic is certain, the mapping is
-> not, and no amount of firmware can settle it. **Wheels off the ground for the first
-> press.**
+**Wheel test: four buttons, one raw duty per channel.** Hold `fl` / `rl` / `rr` / `fr` and
+that channel alone is driven at the slider's speed; releasing brakes, like every other
+control. They send the **raw** `/drive?fl=&rl=&rr=&fr=` form with the other three as explicit
+zeros, because raw mode rejects an incomplete request rather than guessing the missing ones.
+They reuse the same 10 Hz re-send, so the watchdog is fed exactly as it is for the pad, and a
+wheel test **outranks** the pad — it is a diagnostic, and steering mixed into it would defeat
+the purpose.
+
+That is the tool that closes the open question below: press one at a time with the serial
+console open — every raw drive logs `[http] /drive raw fl=.. rl=.. rr=.. fr=..`, naming the
+channel — and note which wheel moves.
+
+> ✅ **CLOSED 2026-10-12 — and the wheel-test buttons are what closed it.** The frame slot
+> `protocol.h` calls `MOT_FL` moves the physical **front-right** wheel and `MOT_RL` the
+> rear-right: the left and right driver boards are **crossed** on this car. `mixer::to_wire()`
+> now translates between the frame's channel names and the wheels, so the names are honest
+> and the `fl`/`rl`/`rr`/`fr` buttons drive the wheels they are named after.
+>
+> **The mixer's `left_right` sign flipped in the same change, and the two are ONE fix.**
+> Before it, the two errors cancelled: the mixer's sign rotated the car the opposite way from
+> what its own comment claimed, and the crossed channels cancelled that out — so the arrows
+> happened to be **right** while every channel name was **wrong**. Fix either half alone and
+> the car steers backwards. `test_link.cpp` pins the pairing down (330 checks).
+>
+> Still to be *driven* rather than reasoned about: the convention is now `?turn=+` turns the
+> car **left**, which is what the page's left arrow sends. **Wheels off the ground for the
+> first press.**
 
 The `/status` JSON carries the link state under `link_*` and `pico.*` (`seen`, `status`,
 `fault`, `age_ms`), so "is the Pico talking, and how long ago?" is answerable from a
@@ -352,12 +376,13 @@ g++ -std=gnu++11 -Wall -Wextra -I include -I ../pico_body/include tools/test_lin
 /tmp/test_link
 ```
 
-**317 checks.** The CRC against an independently written loop implementation over every
+**330 checks.** The CRC against an independently written loop implementation over every
 length from 0 to 64; frame and reply round-trips over all five message types; **every
 single-bit corruption** in both formats rejected (a corrupt frame that is *obeyed* is the
 failure the whole design exists to prevent); the sync hunt fed a frame buried in bytes that
-contain the sync pattern; and the mixer, including a case where the 32-bit intermediate
-changes the answer.
+contain the sync pattern; the mixer, including a case where the 32-bit intermediate changes
+the answer; and — added 2026-10-12 — **the turn convention together with `to_wire()`**, which
+are one fix that either half of would undo.
 
 `-std=gnu++11` is deliberate — that is what this core builds with, so the test doubles as
 proof that `protocol.h` has not drifted into C++14. It **had**: the CRC used loops inside

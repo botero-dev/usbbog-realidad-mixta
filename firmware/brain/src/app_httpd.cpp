@@ -647,8 +647,9 @@ margin:10px auto}
 .pad button.stop{background:#6a2a2a;font-size:13px}
 .pad button.on{background:#3a6a8a}
 .pad span{display:block}
+button.wh{background:#3a3a5a}
+button.wh.on{background:#6a6a9a;color:#fff}
 input[type=range]{width:240px;vertical-align:middle}
-.warn{color:#e0a0b0;font-size:12px;max-width:440px;margin:8px auto}
 </style></head>
 <body>
 <h3>brain &mdash; ESP32-S3</h3>
@@ -662,10 +663,18 @@ input[type=range]{width:240px;vertical-align:middle}
 </div>
 <p class="lbl">speed <b><span id="spdv">40</span>%</b> &mdash; or arrow keys / WASD</p>
 <p><input type="range" id="spd" min="0" max="100" value="40"></p>
+<p class="lbl">wheel test &mdash; <b>hold</b> one; releasing brakes. The mapping is
+<b>measured</b>, so each button drives the wheel it is named after: the left and right
+driver channels were crossed on this car and are corrected in firmware (2026-10-12). The
+<b>direction</b> signs have not been driven yet &mdash; wheels off the ground for the first
+real test</p>
+<p>
+<button class="wh" id="wfl">fl</button>
+<button class="wh" id="wrl">rl</button>
+<button class="wh" id="wrr">rr</button>
+<button class="wh" id="wfr">fr</button>
+</p>
 <p class="lbl" id="drivestat">link: ?</p>
-<p class="warn">Direction signs are unverified until the wheel mapping is
-confirmed on hardware (bring-up steps 4/5) &mdash; a swapped or reversed motor
-will make these buttons lie. Wheels off the ground for the first press.</p>
 <p>
 <button onclick="ask('/play?src=beeps')">beeps</button>
 <button onclick="ask('/play?src=clip')">sound file</button>
@@ -758,10 +767,15 @@ fetch('/status', {cache:'no-store'})
 // --- drive ----------------------------------------------------------------
 // HOLD semantics, not click semantics: pointerdown starts, pointerup/cancel/
 // leave stops. While anything is held the page re-sends at 10 Hz, because the
-// brain's control watchdog commands BRAKE after 250 ms without a command -- so a
+// brain's control watchdog commands BRAKE after 400 ms without a command -- so a
 // held control has to be continuously re-asserted, and that same property means
 // a Wi-Fi link that drops stops the car by itself.
 var held = {f:false,b:false,l:false,r:false};
+// The wheel test: a raw duty on ONE channel, or null. Kept apart from `held` because it
+// is not a driving direction -- it is the diagnostic that SETTLED which channel moves
+// which wheel (2026-10-12; the left/right crossing it found is corrected in
+// mixer::to_wire()). Mixing it with steering would defeat it.
+var wheel = null;
 var driving = false;
 var driveBusy = false;
 
@@ -775,6 +789,10 @@ document.getElementById('spd').addEventListener('input', function(){
 });
 
 function sendDrive(){
+  // A wheel test takes precedence over the pad: it is a diagnostic, and adding a
+  // steering command to it would make it useless as one.
+  if (wheel) { sendWheel(); return; }
+
   var any = held.f || held.b || held.l || held.r;
   if (!any) {
     // Released: brake EXPLICITLY. Letting the watchdog do it would also work,
@@ -799,26 +817,53 @@ function sendDrive(){
 }
 setInterval(sendDrive, 100);
 
-function bindHold(id, key){
+// One channel, raw. Raw mode needs ALL FOUR duties -- the endpoint rejects an incomplete
+// request rather than guessing the missing ones -- so the other three are written as
+// explicit zeros instead of being left out.
+function sendWheel(){
+  if (driveBusy) return;
+  driveBusy = true;
+  var s = speedPermille();
+  var d = {fl:0, rl:0, rr:0, fr:0};
+  d[wheel] = s;
+  driving = true;
+  fetch('/drive?fl=' + d.fl + '&rl=' + d.rl + '&rr=' + d.rr + '&fr=' + d.fr,
+        {method:'POST', cache:'no-store'})
+    .then(function(r){return r.json();})
+    .then(function(j){ showLink(j); })
+    .catch(function(){})
+    .then(function(){ driveBusy = false; });
+}
+
+// One press-to-run button, shared by the drive pad and the wheel test. Pointer capture
+// so pointerup still arrives HERE if the finger slides off the button: without it the
+// car keeps driving with nothing held down.
+function bindPress(id, base, onDown, onUp){
   var el = document.getElementById(id);
   function down(e){
-    held[key] = true;
-    el.className = 'on';
+    onDown();
+    el.className = base ? (base + ' on') : 'on';
     if (e.cancelable) e.preventDefault();
-    // Pointer capture, so pointerup still arrives HERE if the finger slides off
-    // the button. Without it the car keeps driving with nothing held down.
     if (el.setPointerCapture && e.pointerId !== undefined) {
       try { el.setPointerCapture(e.pointerId); } catch(_) {}
     }
   }
-  function up(){ held[key] = false; el.className = ''; }
+  function up(){ onUp(); el.className = base; }
   el.addEventListener('pointerdown', down);
   el.addEventListener('pointerup', up);
   el.addEventListener('pointercancel', up);
   el.addEventListener('pointerleave', up);
   el.addEventListener('contextmenu', function(e){ e.preventDefault(); });
 }
+
+function bindHold(id, key){
+  bindPress(id, '', function(){ held[key] = true; }, function(){ held[key] = false; });
+}
+function bindWheel(id, ch){
+  bindPress(id, 'wh', function(){ wheel = ch; }, function(){ if (wheel === ch) wheel = null; });
+}
 bindHold('bf','f'); bindHold('bb','b'); bindHold('bl','l'); bindHold('br','r');
+bindWheel('wfl','fl'); bindWheel('wrl','rl'); bindWheel('wrr','rr'); bindWheel('wfr','fr');
 
 var KEYS = {ArrowUp:'f',ArrowDown:'b',ArrowLeft:'l',ArrowRight:'r',
             w:'f',s:'b',a:'l',d:'r',W:'f',S:'b',A:'l',D:'r'};
@@ -828,10 +873,11 @@ window.addEventListener('keydown', function(e){
 window.addEventListener('keyup', function(e){
   var k = KEYS[e.key]; if (!k) return; held[k] = false; e.preventDefault();
 });
-// A key held down while the tab loses focus never gets its keyup. Clear
-// everything, and the next tick brakes.
+// A key held down while the tab loses focus never gets its keyup, and a finger that
+// leaves the page never gets its pointerup. Clear everything, and the next tick brakes.
 window.addEventListener('blur', function(){
   held = {f:false,b:false,l:false,r:false};
+  wheel = null;
 });
 
 function showLink(j){
@@ -1275,16 +1321,20 @@ esp_err_t control_handler(httpd_req_t *req) {
 //   turn   left/right   + added to the LEFT wheels, - to the right
 //   twist  front/rear   + added to the FRONT wheels, - to the rear
 //
-// *** THE SIGNS ARE car_control's, AND THEY ARE UNVERIFIED. *** The original car
-// used this same arithmetic with a comment calling +turn "left", while the duties
-// it produces (left wheels forward, right wheels back) rotate a car the other
-// way. Nobody has yet matched FL/RL/RR/FR to the actual wheels -- bring-up steps
-// 4/5 -- so treat every direction here as a coin flip until that is closed. The
-// ARITHMETIC is certain; which wheel moves is the open question, and the two
-// cannot be settled from the same evidence.
+// *** THE CHANNEL MAPPING IS MEASURED; THE SIGNS ARE SETTLED BUT NOT YET DRIVEN. ***
+//
+// SETTLED 2026-10-12: the wheel-test buttons showed that the left and right driver
+// channels were crossed, so `mixer::to_wire()` corrects them and these names are now
+// true. That also flipped the mixer's `left_right` sign -- the two are ONE fix, and
+// test_link.cpp pins them together.
+//
+// So the ARITHMETIC and the MAPPING are both certain. What is still only REASONED is the
+// INTENT: nobody has driven the car and confirmed that `th +` is forward, that `turn +`
+// turns left, and that no motor is wired backwards. Until that is done, the thing to
+// check first is the SIGN of an input, not which wheel it moves.
 //
 // EVERY request here refreshes the brain's own control watchdog. If they stop
-// arriving for 250 ms the brain commands BRAKE by itself (see motor_link.h), and
+// arriving for 400 ms the brain commands BRAKE by itself (see motor_link.h), and
 // that is what makes a phone that sleeps or leaves Wi-Fi range a stopped car
 // rather than one that keeps driving at the last commanded duty.
 esp_err_t drive_handler(httpd_req_t *req) {

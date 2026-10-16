@@ -1,7 +1,7 @@
 // link.h — the S3 -> Pico link: framing, the dead-man, and the slew limit.
 // ---------------------------------------------------------------------------
-// Authority: docs/circuit-plan.md section 4 (frame format and the 100 ms
-// dead-man) and section 10.2 (firmware notes).
+// Authority: docs/circuit-plan.md section 4 (frame format and the dead-man)
+// and section 10.2 (firmware notes).
 //
 // This is the "body" half of the contract in protocol.h. Everything electrical
 // lives in motors.h; this layer only decides WHAT to drive, from bytes.
@@ -12,7 +12,7 @@
 //
 // The three jobs, in the order they matter:
 //
-//   1. THE DEAD-MAN. If motion commands stop arriving for 100 ms, STBY is
+//   1. THE DEAD-MAN. If motion commands stop arriving for `kDeadmanMs`, STBY is
 //      dropped and the drivers go high-Z. This is the link's whole reason for
 //      existing: it is what stops the car when the S3 crashes, reboots, or the
 //      TX wire falls off. Everything else here is bookkeeping.
@@ -30,10 +30,19 @@
 
 namespace link {
 
-// 100 ms at 100 Hz = 10 missed frames (docs/circuit-plan.md section 4). This is
-// the number to re-derive if the frame rate ever changes; nothing else assumes
-// it. Public so the boot banner prints the real value instead of a copy.
-constexpr uint32_t kDeadmanMs = 100;
+// 200 ms at 100 Hz = 20 missed frames (docs/circuit-plan.md section 4). **Raised
+// from 100 ms on 2026-10-12 at the user's request** -- deliberately widened, not a
+// fix for an observed cutout, which is what the plan warns about: it says ".Tunable
+// to 200 ms if you see spurious cutouts -- but find out *why* first".
+//
+// THE COST IS REAL, and it is why 100 ms was the number in the first place: 200 ms
+// is two whole tenths of a second of the motors still holding their last commanded
+// duty after the S3 stops sending. `STBY` low is a COAST, not a brake, so the car
+// rolls for that long -- roughly 20 cm at 1 m/s where it used to be 10.
+//
+// The number to re-derive if the frame rate ever changes; nothing else assumes it.
+// Public so the boot banner prints the real value instead of a copy.
+constexpr uint32_t kDeadmanMs = 200;
 
 // +-100 permille per frame: full scale in 100 ms at 100 Hz. The safety net that
 // stops one frame which happens to pass CRC from commanding a full-scale

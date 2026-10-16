@@ -47,16 +47,52 @@ inline int16_t clamp_duty(int32_t v) {
   return static_cast<int16_t>(v);
 }
 
-// The four lines below are car_control's, unchanged except for the clamp.
+// The four lines below are car_control's, with ONE sign changed and the clamp added.
+//
+// *** THE left_right SIGN IS FLIPPED ON PURPOSE. ***
+// +left_right now puts LESS duty on the wheels this file calls left, which is what makes
+// the car turn LEFT -- brake the left side, drive the right. The page maps its LEFT
+// arrow to +turn, so "+ = turn left" is the convention this file implements, and it is
+// the opposite of car_control's, whose own comment said "+turn = left" while producing
+// duties that rotated the car the other way.
+//
+// It HAD to flip, because of to_wire() below: the two are ONE fix, and either one alone
+// inverts the car's steering. Before them the two errors cancelled -- the arrows happened
+// to be right while the wheel names were wrong.
 inline void mix(const Input& in, int16_t duty[proto::MOTOR_COUNT]) {
   const int32_t th = in.throttle;
   const int32_t fr = in.front_rear;
   const int32_t lr = in.left_right;
 
-  duty[proto::MOT_FL] = clamp_duty(th + fr + lr);  // front left
-  duty[proto::MOT_RL] = clamp_duty(th - fr + lr);  // rear left
-  duty[proto::MOT_RR] = clamp_duty(th - fr - lr);  // rear right
-  duty[proto::MOT_FR] = clamp_duty(th + fr - lr);  // front right
+  duty[proto::MOT_FL] = clamp_duty(th + fr - lr);  // front left
+  duty[proto::MOT_RL] = clamp_duty(th - fr - lr);  // rear left
+  duty[proto::MOT_RR] = clamp_duty(th - fr + lr);  // rear right
+  duty[proto::MOT_FR] = clamp_duty(th + fr + lr);  // front right
+}
+
+// *** THE LEFT AND RIGHT DRIVER BOARDS ARE THE OTHER WAY ROUND ON THIS CAR. ***
+//
+// MEASURED 2026-10-12 with the page's wheel-test buttons, which is what they were built
+// for: a duty in the frame slot protocol.h calls MOT_FL moves the physical FRONT-RIGHT
+// wheel, and MOT_RL moves the rear-right. Both ends of the L/R pair -- a straight
+// crossing, not a front/rear mistake.
+//
+// So the frame's slot names are CHANNEL names, not wheel names, and this is the single
+// place that translates one into the other. After to_wire(), a slot carries the duty for
+// the wheel that slot physically drives, which is what makes the named interfaces honest
+// -- without it the wheel-test buttons go on calling the right wheel "fl".
+//
+// Deliberately NOT in protocol.h: that file is the WIRE contract and the Pico compiles it
+// too, whereas "our left board sits on the right channel" is a fact about THIS CAR's
+// wiring, not about the protocol. In here rather than in the frame builder so that the
+// host test can cover it -- see test_link.cpp.
+inline void to_wire(int16_t duty[proto::MOTOR_COUNT]) {
+  const int16_t fl = duty[proto::MOT_FL];
+  const int16_t rl = duty[proto::MOT_RL];
+  duty[proto::MOT_FL] = duty[proto::MOT_FR];
+  duty[proto::MOT_RL] = duty[proto::MOT_RR];
+  duty[proto::MOT_FR] = fl;
+  duty[proto::MOT_RR] = rl;
 }
 
 }  // namespace mixer

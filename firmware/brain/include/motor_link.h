@@ -8,8 +8,8 @@
 //
 //   1. THE 100 Hz FRAME. A task pinned to core 1 sends one frame every 10 ms.
 //      It runs at a fixed rate regardless of the web traffic, because the Pico's
-//      100 ms dead-man is keyed on frames ARRIVING -- a link that only sends when
-//      a human moves a finger would drop the dead-man every time they stopped.
+//      dead-man is keyed on frames ARRIVING -- a link that only sends when a human
+//      moves a finger would drop the dead-man every time they stopped.
 //   2. THE CONTROL WATCHDOG. See kControlTimeoutMs below. This is the brain's
 //      own safety net and it is NOT the same thing as the Pico's dead-man.
 //   3. THE MIXER. throttle / front_rear / left_right -> four signed duties,
@@ -40,8 +40,9 @@ namespace motor_link {
 // ---------------------------------------------------------------------------
 // THE CONTROL WATCHDOG, and why the Pico's dead-man does not cover it.
 //
-// The Pico's 100 ms dead-man fires when FRAMES stop arriving, which is the right
-// protection for the brain crashing, rebooting, or the TX wire falling off.
+// The Pico's dead-man -- 200 ms, `link.h` on the other end -- fires when FRAMES stop
+// arriving, which is the right protection for the brain crashing, rebooting, or the TX
+// wire falling off.
 //
 // It does NOT protect against the far more likely failure: the brain is fine and
 // still sending, but the human's phone has gone to sleep, walked out of Wi-Fi
@@ -50,16 +51,36 @@ namespace motor_link {
 // holding a control. The Pico cannot detect this: from its point of view nothing
 // has changed.
 //
-// So the brain stops its own driving when commands stop arriving. 250 ms is
-// short enough that a lost client means stopped-and-braking rather than
-// runaway, and long enough to survive the jitter of a page sending at 10 Hz.
+// So the brain stops its own driving when commands stop arriving.
+//
+// **400 ms, raised from 250 ms on 2026-10-12** -- the user was getting brakes WHILE
+// holding the drive button, which is this watchdog firing on a healthy link. 250 ms
+// was only two and a half times the page's re-send interval: one delayed request is
+// enough for the page's in-flight guard to skip a tick, so the gap is already 200 ms
+// before Wi-Fi jitter is counted at all. 400 ms is FOUR intervals, so three
+// consecutive late or lost commands still hold the car.
+//
+// The cost of a spurious trip is far larger than a missed frame, and that is why the
+// margin has to be real: BRAKE is a safety command and is deliberately NOT ramped
+// (plan section 4.3), so it zeroes the duties at once, while the next SET ramps back
+// at the slew limit -- +-100 permille per frame, i.e. a full SECOND from standstill to
+// full. One spurious trip is a hard stop and a one-second restart, not one dull frame.
+//
+// It stays short enough for the job it exists for: a client that has gone away is
+// stopped and braking, not running away at its last commanded duty.
+//
+// If the timeout is seen firing on a link that is genuinely healthy, the log says so --
+// `[link] CONTROL TIMEOUT: no drive command for N ms -> BRAKE` -- and the question to
+// ask is why the /drive stream had a gap that long. The page re-sends from a HOLD, so a
+// gap means the requests are arriving late or not at all; an `[http] /stop` in the same
+// window instead means the PAGE released, which is a different fault entirely.
 //
 // Deliberately BRAKE, not COAST: a coasting car keeps rolling, and the whole
 // point of this watchdog is to stop it. It stays in brake, powered, until a new
 // command arrives -- which is nearly free, because a short brake draws no
 // current unless the wheels are turned.
 // ---------------------------------------------------------------------------
-constexpr uint32_t kControlTimeoutMs = 250;
+constexpr uint32_t kControlTimeoutMs = 400;
 
 // Plan section 4: frames at 100 Hz.
 constexpr uint32_t kFrameHz = 100;

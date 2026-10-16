@@ -1,7 +1,7 @@
 # `pico_body` — RP2040 firmware
 
 The **body**: receives signed duties from the ESP32-S3 *brain* over a UART and turns
-them into 4 × 20 kHz PWM + 8 direction lines + a shared `STBY`, with a 100 ms dead-man.
+them into 4 × 20 kHz PWM + 8 direction lines + a shared `STBY`, with a dead-man on `STBY`.
 
 Authority for every pin and every number here is `docs/circuit-plan.md` — §3 (pin map),
 §3.1 (PWM maths), §4 (frame format), §9 (fail-safe), §10.2 (firmware notes).
@@ -72,7 +72,7 @@ First flash of a blank board needs **BOOTSEL** held (or drag `firmware.uf2` onto
 | --- | --- |
 | `include/protocol.h` | **The contract.** Frame layout, CRC-8, duty limits, motor order. Pure C++, no SDK or Arduino dependency, so it compiles on the host for testing. |
 | `include/motors.h` `src/motors.cpp` | PWM + direction layer. Owns every electrical subtlety. |
-| `include/link.h` `src/link.cpp` | **LINK mode.** Frame hunting, the 100 ms dead-man, the slew limit, the reply. `main()` is only a banner around `link::run()`. |
+| `include/link.h` `src/link.cpp` | **LINK mode.** Frame hunting, the dead-man, the slew limit, the reply. `main()` is only a banner around `link::run()`. |
 | `include/log.h` | `logf()` — `printf` plus a `fflush`, so a crash between two lines does not lose the one explaining why. |
 | `include/status_led.h` | The on-board `GP25` LED as the "powered and running" light, guarded so it compiles to nothing on a Pico W (see below). |
 | `src/main.cpp` | Two modes selected by `PICO_MODE_SELFTEST`: the bench self-test, or LINK. |
@@ -169,9 +169,11 @@ there is no way to make the motors move except by sending frames.
 
 The three jobs, in the order they matter:
 
-1. **The dead-man.** No *motion command* for **100 ms** → `STBY` low, everything high-Z,
-   one loud line in the log. This is the link's whole reason for existing: it is what
-   stops the car when the S3 crashes, reboots, or the TX wire falls off.
+1. **The dead-man.** No *motion command* for `kDeadmanMs` — **200 ms**, raised from 100
+   on 2026-10-12 — → `STBY` low, everything high-Z, one loud line in the log. This is the
+   link's whole reason for existing: it is what stops the car when the S3 crashes,
+   reboots, or the TX wire falls off. Remember the landing state is a **coast**, so a wider
+   window is that much more rolling; the constant and its cost are argued in `link.h`.
 2. **Framing.** `proto::SyncHunt` (in `protocol.h`, shared with the brain's end) hunts a
    13-byte frame out of the byte stream and accepts it only on a matching CRC.
 3. **The slew limit.** `±100` permille per frame on `SET` frames. One bad frame cannot
@@ -189,7 +191,10 @@ A `[link]` line every 2 s is the evidence:
 *** DEAD-MAN: no motion command for 100 ms -> STBY LOW ***
 ```
 
-These are **real captured lines** (2026-10-11), not an illustration:
+These are **real captured lines** (2026-10-11), not an illustration — they predate the
+dead-man's widening from 100 ms to 200 ms, which is why the log line above says 100; a run
+today prints `link::kDeadmanMs` live, since that is what the banner and this line are both
+formatted from. What they establish:
 
 * `200 frames/2s` is exactly 100 Hz, and `seq` advances `+200` per window — so the counter
   is a rate check as well as a liveness check.

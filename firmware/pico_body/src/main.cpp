@@ -9,7 +9,7 @@
 //                        docs/circuit-plan.md section 11.
 //
 //   LINK               : the real job -- parse frames from the S3 and drive the
-//                        motors, with the 100 ms dead-man. Implemented; the
+//                        motors, with the dead-man. Implemented; the
 //                        whole thing lives in link.h / link.cpp and this mode
 //                        is just the bring-up and the banner.
 //

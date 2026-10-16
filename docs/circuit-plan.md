@@ -68,7 +68,7 @@ Everything that decides anything happens on the S3. The Pico decides nothing.
 | **Control law, mixing, ramping, braking** | **S3** | 100 Hz task, pinned to one core |
 | PWM generation | Pico | 20 kHz hardware PWM, 4 channels |
 | Direction logic (sign of the duty) | Pico | derived from the frame, no state machine |
-| Dead-man switch | Pico | drops `STBY` 100 ms after the last valid frame |
+| Dead-man switch | Pico | drops `STBY` 200 ms after the last *motion* command (§4.3) |
 | Encoders, battery sense | nobody yet | Pico's spare pins if you add them (§13) |
 
 **Why the split works:** the S3 needs 7 pins for its own peripherals and simply
@@ -473,9 +473,13 @@ Pico, and not one to go looking for on the Pico side.
 ### 4.3 Timing
 
 * S3 sends at **100 Hz** from the control task.
-* Pico's dead-man timeout: **100 ms** = 10 missed frames. Tunable to 200 ms if you
-  see spurious cutouts — but find out *why* first, because a cutout means the S3's
-  loop stalled.
+* Pico's dead-man timeout: **200 ms** = 20 missed frames (`link::kDeadmanMs`).
+  **Raised from 100 ms on 2026-10-12 at the user's request** — deliberately widened,
+  not a fix for an observed cutout, which is what this bullet used to warn about. The
+  cost is the whole point of the number: `STBY` low is a **coast**, so the car keeps
+  rolling for the length of the window — roughly **20 cm at 1 m/s where it used to be
+  10**. If you ever see spurious cutouts, do not raise it again without finding out
+  *why*: a cutout means the S3's loop stalled.
 * Pico applies a **slew limit**: no more than ±100 permille change per frame (full
   range in 100 ms). This exists so that one corrupt command that passes CRC cannot slam
   the motors. **Enabled 2026-10-11** — it applies to `SET` frames only; `BRAKE`, `COAST`
@@ -509,7 +513,10 @@ rebooting or the wire coming off. It does **not** cover the far more likely fail
 brain is perfectly healthy and still sending, but the phone has slept or left Wi-Fi range —
 so the brain keeps dutifully sending the last duty and the car keeps driving with nobody
 holding a control. `motor_link.cpp` therefore commands **`BRAKE` if no `/drive` request
-arrives for 250 ms.**
+arrives for 400 ms** (`kControlTimeoutMs`, raised from 250 ms on 2026-10-12: 250 was only
+2.5× the page's 100 ms re-send interval, so ordinary Wi-Fi jitter tripped it while a button
+was still held — and because `BRAKE` is not ramped while `SET` is, one trip costs a hard stop
+plus a one-second ramp back rather than a single dull frame).
 
 ---
 
@@ -1152,10 +1159,10 @@ you did not ask for.
 | Pico powered but firmware not running | **motors off** | same — `GP28` pads reset with `PDE = 1` |
 | Pico firmware hangs | **motors off** | RP2040 hardware watchdog (~1 s) resets the chip → pads back to pull-down |
 | Pico firmware crashes | **motors off** | as above |
-| S3 reboots / crashes | motors stop after 100 ms | link goes silent → dead-man timeout |
-| UART wire falls off | motors stop after 100 ms | same |
+| S3 reboots / crashes | motors stop after 200 ms | link goes silent → dead-man timeout |
+| UART wire falls off | motors stop after 200 ms | same |
 | One corrupt frame | ignored | CRC-8 reject; sequence-gap counter |
-| Sustained corruption | motors stop after 100 ms | no valid frame within the window |
+| Sustained corruption | motors stop after 200 ms | no valid frame within the window |
 | E-stop pressed *(optional)* | **motors off instantly** | normally-closed switch from the `STBY` node to GND |
 | Battery below ~9.6 V | you stop driving | **balance-plug alarm**, fitted as part of the build (§9.1) |
 
@@ -1266,7 +1273,7 @@ Do not connect everything and hope. Each step is independently verifiable:
 | 2 | + PCM5102A and amp | test tone is clean, and still clean while the camera streams |
 | 3 | + BMI160 | **`0x69`** answers with `WHO_AM_I = 0xD1`; gyro reads ~0 when still |
 | 4 | Pico alone on a bench supply, **no motors** | the on-board LED lights within a fraction of a second of power-up; all 12 logic lines idle low, `STBY` low at power-up; frames from a USB-TTL adapter produce 20 kHz on a scope |
-| 5 | + the UART link | ✅ **2026-10-11** — 100 Hz frames confirmed, `crc 0` both ways, and the dead-man **provoked** by stopping the sender: `timeouts` 0 → 1 with `STBY` low within 100 ms. **The literal wire-pull is still untested** (a floating input can inject noise; a stopped sender cannot) |
+| 5 | + the UART link | ✅ **2026-10-11** — 100 Hz frames confirmed, `crc 0` both ways, and the dead-man **provoked** by stopping the sender: `timeouts` 0 → 1 with `STBY` low within 100 ms *(the timeout was 100 ms then; it has been 200 ms since 2026-10-12, so the margin is that much wider)*. **The literal wire-pull is still untested** (a floating input can inject noise; a stopped sender cannot) |
 | 6 | + one ROB-14450 and one motor, supply current-limited to 0.5 A | forward / reverse / coast / brake all correct; motor is silent |
 | 7 | + all four motors, wheels off the ground | four independent duties; no brownout when all four slam from 0 to 100 % |
 | 8 | + full load, driving | camera streaming + WiFi + audio + driving, watching for resets |
@@ -1297,7 +1304,7 @@ the rest of the plan is decoration.
 > * **the literal wire-pull.** A stopped sender and a pulled wire both look like "no bytes",
 >   so the timer logic is identical — but a *floating* input can inject **noise**, and noise
 >   could in principle produce a false-accept frame that refreshes the timer. The cheap test
->   is still worth doing: pull the TX wire and confirm `STBY` drops within 100 ms.
+>   is still worth doing: pull the TX wire and confirm `STBY` drops within 200 ms.
 > * **the slew limit.** It applies only to `SET` frames, and no `SET` frame with a non-zero
 >   duty has ever been sent. Its clamp is covered by the host tests; its effect on real
 >   motors is not.

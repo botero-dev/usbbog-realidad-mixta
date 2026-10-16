@@ -42,7 +42,7 @@ enum MsgType : uint8_t {
 // ends must agree and neither can infer the answer from the bytes.
 // ---------------------------------------------------------------------------
 //
-// 1. WHICH TYPES FEED THE 100 ms DEAD-MAN.
+// 1. WHICH TYPES FEED THE DEAD-MAN (whose length is link.h's `kDeadmanMs`).
 //    SET/BRAKE/COAST/DISABLE do: they command motion, and the timer exists to
 //    stop the car when commands stop arriving.
 //    PING does NOT. "Liveness only; does not move anything" is read literally.

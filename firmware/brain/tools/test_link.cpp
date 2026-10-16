@@ -31,6 +31,10 @@
 //     MEASURED a real property of the design: see the note in the test itself.
 //   * The mixer, including a case where the 32-bit intermediate changes the
 //     ANSWER and not merely the code.
+//   * The turn convention and to_wire(), TOGETHER. They are one fix -- the mixer's
+//     left_right sign was flipped the same day the crossed left/right channels were
+//     corrected -- and either half alone inverts the car's steering. This is where that
+//     pairing is pinned down.
 // ---------------------------------------------------------------------------
 
 #include <stdint.h>
@@ -255,42 +259,68 @@ static void test_sync_hunt_resyncs() {
 }
 
 static void test_mixer() {
-  printf("mixer: car_control's arithmetic, the clamp, and the wide intermediate\n");
+  printf("mixer: the turn convention, the clamp, the wide intermediate, and to_wire\n");
 
   int16_t d[proto::MOTOR_COUNT];
+  mixer::Input in = {0, 0, 0};
 
-  // Straight drive: all four motors equal, which is the case that must be right
-  // before anything else can be.
-  mixer::Input in = {500, 0, 0};
+  // Straight drive: all four equal, the case that has to be right before anything else
+  // can be -- and to_wire() must leave it alone, because a crossing cannot change four
+  // equal values.
+  in.throttle = 500;
   mixer::mix(in, d);
   for (uint8_t i = 0; i < proto::MOTOR_COUNT; ++i) CHECK(d[i] == 500);
+  mixer::to_wire(d);
+  for (uint8_t i = 0; i < proto::MOTOR_COUNT; ++i) CHECK(d[i] == 500);
 
-  // Pure turn: left wheels forward, right wheels back.
-  // NOTE deliberately not called "left": that is what car_control's own comment
-  // said while producing these duties, and the two disagree about which way a car
-  // then rotates. Which is the point -- that is a WHEEL MAPPING question, still
-  // open (bring-up steps 4/5), and no test on the host can settle it.
+  // *** THE TURN CONVENTION, SETTLED 2026-10-12 AND PINNED DOWN HERE. ***
+  // +left_right puts LESS duty on the wheels the frame calls left, i.e. the car turns
+  // LEFT, which is what the page's LEFT arrow sends. That is the OPPOSITE SIGN to
+  // car_control's original, and it had to change because motor_link.cpp now calls
+  // to_wire(): the two are one fix, and either alone inverts the steering.
   in.throttle = 0;
   in.front_rear = 0;
   in.left_right = 600;
   mixer::mix(in, d);
+  CHECK(d[proto::MOT_FL] == -600);
+  CHECK(d[proto::MOT_RL] == -600);
+  CHECK(d[proto::MOT_RR] == 600);
+  CHECK(d[proto::MOT_FR] == 600);
+
+  // to_wire() then crosses the sides, because the left and right driver boards are
+  // crossed on this car: the duties land on the CHANNELS that physically drive the
+  // wheels they were named for. Read the result by what each slot drives, not by what
+  // protocol.h calls it -- slots FL and RL are the RIGHT wheels here, so after the
+  // crossing they carry the +600 and the car turns left.
+  mixer::to_wire(d);
   CHECK(d[proto::MOT_FL] == 600);
   CHECK(d[proto::MOT_RL] == 600);
   CHECK(d[proto::MOT_RR] == -600);
   CHECK(d[proto::MOT_FR] == -600);
 
+  // to_wire() must be its own INVERSE: crossing sides is symmetric, and an
+  // implementation that forgot one direction would still pass every check above.
+  int16_t a[proto::MOTOR_COUNT] = {11, 22, 33, 44};
+  int16_t b[proto::MOTOR_COUNT];
+  for (uint8_t i = 0; i < proto::MOTOR_COUNT; ++i) b[i] = a[i];
+  mixer::to_wire(b);
+  CHECK(b[proto::MOT_FL] == 44 && b[proto::MOT_RL] == 33 && b[proto::MOT_RR] == 22 &&
+        b[proto::MOT_FR] == 11);
+  mixer::to_wire(b);
+  for (uint8_t i = 0; i < proto::MOTOR_COUNT; ++i) CHECK(b[i] == a[i]);
+
   // The wide intermediate, in a case where it changes the ANSWER rather than just
-  // the code: 20000 fits in an int16_t, but 3 x 20000 = 60000 does not. A 16-bit
-  // sum would wrap to -5536 and clamp to -1000 -- a full-scale REVERSAL out of a
-  // full-scale FORWARD command. The int32_t sum clamps to +1000, as asked.
+  // the code: fr (the +left_right term) is now on the FRONT RIGHT, so it is MOT_FR that
+  // sums to 3 x 20000 = 60000 and would wrap to -5536 in a 16-bit sum -- a full-scale
+  // REVERSAL out of a full-scale FORWARD command. The int32_t sum clamps to +1000.
   in.throttle = 20000;
   in.front_rear = 20000;
   in.left_right = 20000;
   mixer::mix(in, d);
-  CHECK(d[proto::MOT_FL] == proto::DUTY_MAX);   // 60000 -> clamped
-  CHECK(d[proto::MOT_RL] == proto::DUTY_MAX);   // 20000
-  CHECK(d[proto::MOT_RR] == -proto::DUTY_MAX);  // -20000
-  CHECK(d[proto::MOT_FR] == proto::DUTY_MAX);   // 20000
+  CHECK(d[proto::MOT_FL] == proto::DUTY_MAX);   // 20000 -> clamped
+  CHECK(d[proto::MOT_RL] == -proto::DUTY_MAX);  // -20000
+  CHECK(d[proto::MOT_RR] == proto::DUTY_MAX);   // 20000
+  CHECK(d[proto::MOT_FR] == proto::DUTY_MAX);   // 60000 -> clamped
 }
 
 int main() {
