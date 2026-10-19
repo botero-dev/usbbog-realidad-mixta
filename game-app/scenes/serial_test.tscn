@@ -1,6 +1,6 @@
 [gd_scene format=3 uid="uid://b8c7v17yfqypg"]
 
-[ext_resource type="Script" uid="uid://3o3pkhj1pwi8" path="res://scenes/main.gd" id="1_o5qli"]
+[ext_resource type="Script" uid="uid://3o3pkhj1pwi8" path="res://scripts/serial_test.gd" id="1_mbdvw"]
 
 [node name="Control" type="Control" unique_id=1646066797]
 layout_mode = 3
@@ -9,7 +9,7 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-script = ExtResource("1_o5qli")
+script = ExtResource("1_mbdvw")
 
 [node name="Button" type="Button" parent="." unique_id=2849902]
 layout_mode = 0
