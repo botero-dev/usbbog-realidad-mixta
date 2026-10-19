@@ -3,3 +3,8 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# Intermediates from brain/tools/build_audio.py. Regenerable from the masters in
+# brain/audio/ in seconds, so they are not committed. What IS committed is the
+# masters, and the C++ the script generates from them.
+brain/audio/pcm/

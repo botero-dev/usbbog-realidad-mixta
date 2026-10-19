@@ -28,8 +28,10 @@
 // the USB serial console, so using them would have cost the log. See
 // include/motor_link.h for the whole argument.
 //
-// AUDIO IS SILENT UNTIL ASKED. There is no autoplay: the two buttons on the page
-// are the only way to make a sound (see audio_player.h for why).
+// AUDIO IS SILENT UNTIL ASKED. There is no autoplay: the buttons on the page are
+// the only way to make a sound (see audio_player.h for why). There is one button
+// for the test tones and one per embedded clip; the clip names come from the
+// generated table in include/audio_clips.h.
 //
 // Wiring: NONE for the camera (it is on the board's own FPC connector). Six wires
 // to the DAC, listed in README.md and plan section 6.
@@ -369,10 +371,10 @@ void setup() {
   Serial.println("[http] endpoints -- TWO servers, on two ports:");
   Serial.println("  :80     /          the page: stream, sound buttons, level buttons");
   Serial.println("  :80     /capture   one JPEG snapshot");
-  Serial.println("  :80     /status    JSON: heap, psram, clients, fps, audio, volume");
+  Serial.println("  :80     /status    JSON: heap, psram, clients, fps, audio, volume, clips");
   Serial.println("  :80     /imu       JSON: accel, gyro, tilt, temp, seq (page polls 15 Hz)");
   Serial.println("  :80     /control   GET|POST sensor, lights (mode|group|colour), ?vol=..");
-  Serial.println("  :80     /play      GET|POST ?src=beeps|clip[&vol=0..1000]  (non-blocking)");
+  Serial.println("  :80     /play      GET|POST ?src=beeps|<clip>[&vol=0..1000]  (non-blocking)");
   Serial.println("  :80     /drive     GET|POST the motors: ?th=..&fr=..&lr=.. (per-mille)");
   Serial.println("  :80     /stop      GET|POST ?mode=brake|coast|disable  (brake by default)");
   Serial.println("  :81     /stream    multipart MJPEG  <-- the video");

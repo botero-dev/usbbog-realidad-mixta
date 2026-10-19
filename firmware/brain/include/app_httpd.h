@@ -2,14 +2,15 @@
 // ---------------------------------------------------------------------------
 // Everything the outside world can reach lives behind this header:
 //
-//   GET  /          the HTML page: the stream, the sound buttons, and the
-//                   beep-level buttons
+//   GET  /          the HTML page: the stream, the sound and level buttons,
+//                   and one button per embedded clip
 //   GET  /stream    multipart MJPEG — the video stream
 //   GET  /capture   one JPEG snapshot
-//   GET  /status    JSON: heap, PSRAM, clients, fps, audio, volume, sensor
+//   GET  /status    JSON: heap, PSRAM, clients, fps, audio, volume, sensor,
+//                   clips[]
 //   GET|POST /control  sensor settings, the LED colour and the audio level
-//   GET|POST /play  a sound: ?src=beeps | ?src=clip, and an optional
-//                   ?vol=0..1000 (per-mille) to set the level with it
+//   GET|POST /play  a sound: ?src=beeps, or ?src=<clip> from clips[], and an
+//                   optional ?vol=0..1000 (per-mille) to set the level with it
 //
 // It is a deliberate, slimmed-down version of the core's own example at
 // libraries/ESP32/examples/Camera/CameraWebServer/app_httpd.cpp — same

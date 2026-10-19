@@ -1,9 +1,20 @@
 // audio_player.cpp — see audio_player.h.
 // ---------------------------------------------------------------------------
-// The I2S configuration below is the one VERIFIED ON HARDWARE (three beeps heard
-// out of the PCM5102A + amp, 2026-10-11): 44.1 kHz, 16-bit, stereo, on the
-// permuted pins 47 BCK / 21 DIN / 45 LRCK. Do not change these numbers without a
-// reason you can hear.
+// The I2S configuration below is VERIFIED ON HARDWARE (three beeps heard out of
+// the PCM5102A + amp, 2026-10-11): 16-bit, stereo, on the permuted pins
+// 47 BCK / 21 DIN / 45 LRCK. Do not change these numbers without a reason you
+// can hear.
+//
+// EXCEPTION, AND IT IS A DELIBERATE ONE: the rate is 22050 Hz, not the 44.1 kHz
+// the first revision ran at. The clips are embedded as raw samples in `.rodata`,
+// so they cost `seconds x rate x 2` bytes of the app partition, and at 44.1 kHz
+// the seven of them came to 2.59 MB against a 3.34 MB partition that the
+// application already uses 1.2 MB of. 22050 Hz halves that to 1.28 MB. The DAC is
+// rate-agnostic -- it derives its clock from BCK -- so this is the cheapest way to
+// buy the space back, and it costs 11 kHz of bandwidth, which is transparent for
+// speech. `tools/build_audio.py` is the other half of this decision and explains
+// the arithmetic; AUDIO_CLIP_RATE there is static_asserted against SAMPLE_RATE
+// here, because a mismatch would play everything at the wrong pitch in silence.
 //
 // ---------------------------------------------------------------------------
 // THE API GENERATION TRAP -- READ THIS BEFORE COPYING ANY EXAMPLE OFF THE WEB.
@@ -24,7 +35,7 @@
 #include <math.h>
 #include <string.h>
 
-#include "audio_clip.h"
+#include "audio_clips.h"
 
 namespace {
 
@@ -46,7 +57,19 @@ constexpr gpio_num_t PIN_I2S_LRCK = GPIO_NUM_45;  // -> DAC pad 4, `LCK`
 
 // --- I2S format -------------------------------------------------------------
 constexpr i2s_port_t I2S_PORT = I2S_NUM_0;
-constexpr uint32_t SAMPLE_RATE = 44100;
+
+// The one rate for everything: the tones are generated at it and the clips are
+// STORED at it, so neither is resampled on the device. See the note at the top of
+// this file for why it is 22050 and not 44100.
+constexpr uint32_t SAMPLE_RATE = 22050;
+
+// The clips and the port disagreeing is the classic silent audio bug -- it plays,
+// just at the wrong pitch -- so make it a compile error instead. build_audio.py
+// writes AUDIO_CLIP_RATE from the same number it resampled with.
+static_assert(AUDIO_CLIP_RATE == SAMPLE_RATE,
+              "clips are stored at a different rate than the I2S port runs at -- "
+              "re-run tools/build_audio.py or fix SAMPLE_RATE");
+
 constexpr size_t BUF_FRAMES = 256;  // stereo frames per write = 1 KB
 
 // --- request state ----------------------------------------------------------
@@ -62,14 +85,29 @@ constexpr size_t BUF_FRAMES = 256;  // stereo frames per write = 1 KB
 // chase, so it is closed here rather than left to chance.
 portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 
-volatile uint8_t s_request = 0;      // 0 none, 1 beeps, 2 clip
-volatile uint32_t s_generation = 0;  // bumped per request; aborts playback
-volatile uint8_t s_playing = 0;      // 0 idle, 1 beeps, 2 clip
+volatile uint8_t s_request = 0;       // 0 none, 1 beeps, 2 clip
+volatile uint8_t s_request_clip = 0;  // index into kAudioClips[] when s_request == 2
+volatile uint32_t s_generation = 0;   // bumped per request; aborts playback
+volatile uint8_t s_playing = 0;       // 0 idle, 1 beeps, 2 clip
+volatile uint8_t s_playing_clip = 0;  // index into kAudioClips[] when s_playing == 2
 
 void request(uint8_t which) {
   taskENTER_CRITICAL(&s_mux);
   s_request = which;
   s_generation++;  // immediately invalidates anything currently playing
+  taskEXIT_CRITICAL(&s_mux);
+}
+
+// The same handshake as request(), but it also has to publish WHICH clip. The
+// index and the request code must go together: were they written separately, the
+// audio task could read a new index against an old request (or the reverse) and
+// play a sound nobody asked for. That is why this is its own function and not a
+// second global someone could set on its own.
+void request_clip(uint8_t index) {
+  taskENTER_CRITICAL(&s_mux);
+  s_request_clip = index;
+  s_request = 2;
+  s_generation++;
   taskEXIT_CRITICAL(&s_mux);
 }
 
@@ -84,7 +122,7 @@ bool superseded(uint32_t gen) {
 // --- tone generation --------------------------------------------------------
 // 1024-entry sine table, built once at startup.
 //
-// A table rather than sinf() per sample: at 44.1 kHz a call per sample would
+// A table rather than sinf() per sample: at 22050 Hz a call per sample would
 // still fit (the S3 has an FPU, unlike the classic ESP32), but the audio loop is
 // the one place where "it probably keeps up" is not good enough, and indexing a
 // table is trivially correct.
@@ -210,8 +248,8 @@ void play_tone(uint16_t freq_hz, uint32_t ms, uint32_t gen) {
     size_t written = 0;
     // portMAX_DELAY: this task is the only writer, so blocking until the DMA
     // chain has room is exactly the right behaviour and keeps the phase
-    // continuous. It also sets the ~6 ms granularity at which a new request can
-    // interrupt this one.
+    // continuous. It also sets the granularity at which a new request can
+    // interrupt this one -- 256 frames, i.e. ~12 ms at 22050 Hz.
     i2s_write(I2S_PORT, buf, sizeof(buf), &written, portMAX_DELAY);
   }
 }
@@ -227,26 +265,27 @@ void play_beeps(uint32_t gen) {
   }
 }
 
-// Play the embedded clip once.
+// Play one embedded clip, once.
 //
-// The clip is MONO 16-bit at the same 44.1 kHz the I2S port is already configured
-// for, so the only per-frame work is duplicating the sample into both slots -- the
-// frame layout stays the standard one the DAC has locked onto, and nothing is
-// resampled at runtime. `tools/pcm_to_c.py` explains how to make that true again if
-// the audio is ever replaced; a rate or channel mismatch is SILENT, it just plays
-// at the wrong pitch.
-void play_clip_file(uint32_t gen) {
+// The clip is MONO 16-bit at the same rate the I2S port is configured for (the
+// static_assert above is what makes that true rather than hoped), so the only
+// per-frame work is duplicating the sample into both slots -- the frame layout
+// stays the standard one the DAC has locked onto, and nothing is resampled at
+// runtime. `tools/build_audio.py` is what keeps that promise when a clip is
+// added or replaced; get it wrong and it is SILENT, the audio just plays at the
+// wrong pitch.
+void play_clip(const AudioClip &clip, uint32_t gen) {
   int16_t buf[BUF_FRAMES * 2];  // interleaved L, R
   size_t pos = 0;
 
-  while (pos < CLIP_SAMPLES) {
+  while (pos < clip.count) {
     if (superseded(gen)) return;
 
-    const size_t room = CLIP_SAMPLES - pos;
+    const size_t room = clip.count - pos;
     const size_t n = (room < BUF_FRAMES) ? room : BUF_FRAMES;
 
     for (size_t f = 0; f < n; ++f) {
-      const int16_t s = (int16_t)(clip_pcm[pos + f] * g_volume);
+      const int16_t s = (int16_t)(clip.pcm[pos + f] * g_volume);
       buf[2 * f] = s;      // left  -> DAC LOUT (the pad that is wired)
       buf[2 * f + 1] = s;  // right -> DAC ROUT (unused in this mono build)
     }
@@ -383,9 +422,11 @@ void player_task(void *) {
     taskENTER_CRITICAL(&s_mux);
     const uint32_t gen = s_generation;
     const uint8_t which = s_request;
+    const uint8_t clip_index = s_request_clip;
     s_request = 0;
     taskEXIT_CRITICAL(&s_mux);
     s_playing = which;
+    s_playing_clip = clip_index;
 
     // Apply any pending volume change now, between sounds, never during one.
     if (g_volume_dirty) {
@@ -393,16 +434,18 @@ void player_task(void *) {
       set_volume(g_pending_volume);
     }
 
+    // The clip NAME is logged, not the word "clip": with seven of them, "which one"
+    // is the whole question, and the name is exactly the string /play?src= takes.
     Serial.printf("[audio] playing %s (%u Hz) at %.4f (%.2f%% FS, %.1f dBFS)\n",
-                  which == 1 ? "beeps" : "clip", (unsigned)SAMPLE_RATE, g_volume,
-                  g_volume * 100.0f,
+                  which == 1 ? "beeps" : kAudioClips[clip_index].name,
+                  (unsigned)SAMPLE_RATE, g_volume, g_volume * 100.0f,
                   (g_volume > 0.0f) ? 20.0f * log10f(g_volume) : -120.0f);
 
     const uint32_t started = millis();
     if (which == 1) {
       play_beeps(gen);
     } else {
-      play_clip_file(gen);
+      play_clip(kAudioClips[clip_index], gen);
     }
     const uint32_t took = millis() - started;
 
@@ -417,9 +460,12 @@ void player_task(void *) {
       // NOT an audio bug: it is plan section 6's shared-PSRAM-bus prediction, or
       // contention for core 0, showing up in the only place you can hear it.
       //
-      // Expected: beeps 3 x (220 + 120) = 1020 ms; clip = 182414 / 44100 = 4136 ms.
+      // Expected: beeps 3 x (220 + 120) = 1020 ms; a clip is exactly its length,
+      // which the table knows -- so this never goes stale when a clip is replaced.
       // The "late" thresholds below are ~25 % over, which is already underrun.
-      const uint32_t asked = (which == 1) ? 1020u : 4136u;
+      const uint32_t asked =
+          (which == 1) ? 1020u
+                       : (kAudioClips[clip_index].count * 1000u) / SAMPLE_RATE;
       const uint32_t late = (asked * 5u) / 4u;
       Serial.printf("[audio] done in %u ms (expected ~%u ms)%s\n",
                     (unsigned)took, (unsigned)asked,
@@ -434,14 +480,30 @@ void player_task(void *) {
 void audio_init() {
   build_sine_table();
   i2s_init();
-  // 8 KB of stack: play_tone() and play_clip_file() each put a 1 KB interleaved
+  // 8 KB of stack: play_tone() and play_clip() each put a 1 KB interleaved
   // buffer on the stack, and a stack overflow on this core is a Silent Reboot
   // with no message. The headroom is cheap.
   xTaskCreatePinnedToCore(player_task, "audio", 8192, nullptr, 4, nullptr, 0);
 }
 
 void audio_request_beeps() { request(1); }
-void audio_request_clip() { request(2); }
+
+bool audio_request_clip(const char *name) {
+  if (name == nullptr) return false;
+  for (unsigned i = 0; i < kAudioClipCount; ++i) {
+    if (strcmp(kAudioClips[i].name, name) == 0) {
+      request_clip((uint8_t)i);
+      return true;
+    }
+  }
+  return false;
+}
+
+unsigned audio_clip_count() { return kAudioClipCount; }
+
+const char *audio_clip_name(unsigned index) {
+  return (index < kAudioClipCount) ? kAudioClips[index].name : "";
+}
 
 void audio_set_volume(float fraction) {
   if (fraction < 0.0f) fraction = 0.0f;
@@ -459,7 +521,9 @@ const char *audio_now_playing() {
     case 1:
       return "beeps";
     case 2:
-      return "clip";
+      // The name, not the word "clip", so that /status round-trips: whatever it
+      // reports here is a valid /play?src= argument.
+      return kAudioClips[s_playing_clip].name;
     default:
       return "idle";
   }

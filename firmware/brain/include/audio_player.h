@@ -1,5 +1,5 @@
 // audio_player.h — the S3's audio output: I2S bring-up, a tone generator, and the
-// embedded clip, all driven on request.
+// embedded clips, all driven on request.
 // ---------------------------------------------------------------------------
 // Two decisions shape this module:
 //
@@ -18,8 +18,8 @@
 //    a request; the audio task does the writing.
 //
 // A new request SUPERSEDES whatever is already playing, taking effect at the
-// next buffer boundary (~6 ms). Pressing both buttons quickly gives you the
-// second sound — not a queue, and not a stutter.
+// next buffer boundary (~12 ms at 22050 Hz). Pressing two buttons quickly gives
+// you the second sound — not a queue, and not a stutter.
 // ---------------------------------------------------------------------------
 #pragma once
 
@@ -32,11 +32,23 @@ void audio_init();
 // Request a sound. Returns immediately: never blocks, and never fails loudly.
 // A request made while something is playing replaces it.
 void audio_request_beeps();  // the 440 / 660 / 880 Hz test tones
-void audio_request_clip();   // the embedded clip (audio_clip.h), 4.14 s
+
+// Request an embedded clip BY NAME and return whether it was queued. The names
+// are the slugs in include/audio_clips.h (generated), and they are exactly what
+// /play?src= takes and what /status reports — so a name read off the log can be
+// pasted straight back into curl. A name that matches nothing queues nothing and
+// returns false; the caller decides how to answer.
+bool audio_request_clip(const char *name);
+
+// The clip list. Present because the list is GENERATED: nothing in the firmware
+// hard-codes a clip name, so the page and /status pick up a newly added clip
+// without an edit anywhere else.
+unsigned audio_clip_count();
+const char *audio_clip_name(unsigned index);  // "" if out of range
 
 // Introspection, for /status and the boot log.
 bool audio_busy();
-const char *audio_now_playing();  // "idle" | "beeps" | "clip"
+const char *audio_now_playing();  // "idle" | "beeps" | <clip name>
 
 // Digital amplitude, as a fraction of full scale (0.0 .. 1.0).
 //

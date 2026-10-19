@@ -38,13 +38,36 @@ in `firmware/car_control` (§10.3).
 
 ## Audio is silent until asked
 
-Two sounds, both requested from the page or from `/play`, and **nothing plays by default**:
+**Eight sounds**, all requested from the page or from `/play`, and **nothing plays by
+default**:
 
 | Button | What it is | Entry point |
 | --- | --- | --- |
 | **beeps** | the 440 / 660 / 880 Hz test tones | `audio_request_beeps()` |
-| **sound file** | the embedded 4.14 s clip (`clip.pcm` → `audio_clip.h`) | `audio_request_clip()` |
+| **one button per clip** | the seven clips in `audio/`, embedded as raw samples | `audio_request_clip("<name>")` |
 | **very low · low · medium · high · very high** | select the level for the sound buttons: 1 / 2 / 5 / 10 / 20 % of full scale | `/control?vol=N` |
+
+Which clip is which, and what `src=` takes for each:
+
+| `src` | source file | length |
+| --- | --- | --- |
+| `beeps` | — (generated) | 1.02 s |
+| `clip` | `clip.pcm` | 4.14 s |
+| `kachao1` | `Kachao I.m4a.mp4` | 2.34 s |
+| `kachao2` | `Kachao II.m4a.mp4` | 2.72 s |
+| `kachao3` | `Kachao III.m4a.mp4` | 2.44 s |
+| `rapido` | `Soy más rápido que rápido.m4a.mp4` | 6.25 s |
+| `ganadora` | `Una ganadora …. 42 perdedores.m4a.mp4` | 7.36 s |
+| `velocidad` | `Velocidad, yo soy la velocidad.m4a.mp4` | 3.86 s |
+
+The names are the slugs in `tools/build_audio.py`, and `/status` reports the one being
+played as `audio` — so a name read off the log or the page pastes straight back into
+`curl`.
+
+**The clip buttons are built from the firmware's own list**, not from names written into
+`INDEX_HTML`: the page reads `clips[]` out of `/status` and makes a button per entry. That
+is the difference between adding a clip in one place and adding it in two, one of which
+nobody remembers.
 
 The level buttons **only select** — they play nothing, so a level can be chosen without
 making a noise. Press **beeps** to hear it. They exist because *"does it distort at this
@@ -70,12 +93,50 @@ beeping. And on a car, sound should be a decision rather than a side effect of b
 **Playback runs in its own task, never in the HTTP handler.** `i2s_write()` blocks for the
 length of the sound, and that handler's task is the one serving `/stream`, so playing
 inline would freeze the video every time a button was pressed — a confusing thing to debug.
-A new request supersedes one already playing, at the next ~6 ms buffer boundary.
+A new request supersedes one already playing, at the next ~12 ms buffer boundary.
 
 The reason the first bring-up was a *tone* still holds, and it is why the button is
 labelled "beeps": a tone is a chain you can verify, whereas playing a file exercises the
 filesystem, the decoder, the I²S format, the DAC and the amp at once, and a failure tells
 you nothing about which one.
+
+The reason there is a *page* at all is the same: the clips are raw samples compiled into
+the binary, so there is no filesystem, no decoder and no container format between the
+button and the DAC. What is left that can fail is the I²S format and the hardware — which
+is exactly the pair the first bring-up already verified.
+
+### How a clip gets in, and why they are 22050 Hz
+
+```
+audio/*.m4a.mp4  --ffmpeg-->  audio/pcm/<slug>.pcm  --build_audio.py-->  src/audio_clip_<slug>.cpp
+                                                                         src/audio_clips.cpp
+                                                                         include/audio_clips.h
+```
+
+`python3 tools/build_audio.py` does the whole thing, and **the generated files are
+committed** — there is no build step in `pio run` that regenerates them, so a fresh clone
+compiles the audio that was in the repository when it was cloned. Re-run the script after
+adding a file; that is what makes the clip appear.
+
+The intermediate `.pcm` files under `audio/pcm/` are *not* committed. They are cheap to
+rebuild and the masters in `audio/` are the thing worth keeping.
+
+**Why 22050 Hz.** The samples are `.rodata`: they travel inside `firmware.bin`, and
+`firmware.bin` has to fit the app partition, which is **3,342,336 bytes** on this board
+(Arduino's `default_8MB.csv`, selected by the Freenove board def). The cost is
+`seconds × rate × 2 bytes`, so the rate IS the size knob:
+
+| rate | 7 clips, 29.4 s | verdict |
+| --- | --- | --- |
+| 44100 Hz | 2.59 MB | does not fit — the app already uses ~1.2 MB |
+| **22050 Hz** | **1.28 MB** | **chosen: 63.7 % of the partition used** |
+| 16000 Hz | 0.94 MB | fits, but telephone quality |
+
+Nothing is resampled on the device: `SAMPLE_RATE` in `audio_player.cpp` is 22050 too, so
+the samples play back at their native rate and the DAC simply clocks slower. That pairing
+is not left to discipline — `build_audio.py` emits `AUDIO_CLIP_RATE`, and
+`audio_player.cpp` `static_assert`s it against the driver's rate, because the failure
+otherwise is silent: everything plays at the wrong pitch and nothing reports it.
 
 ---
 
@@ -86,8 +147,8 @@ you nothing about which one.
 | `GET /` | The page: the live stream, the sound buttons and the beep-level buttons. |
 | `GET /stream` | The video — `multipart/x-mixed-replace`, one JPEG per part. **On port 81** — see below. |
 | `GET /capture` | One JPEG snapshot. |
-| `GET /status` | JSON: heap, PSRAM, stream clients, fps, `audio`, sensor settings, LED. |
-| `GET\|POST /play` | `?src=beeps` or `?src=clip`, plus an optional `&vol=0..1000` (per-mille) to set the level with it. Returns immediately; playback happens in the audio task. |
+| `GET /status` | JSON: heap, PSRAM, stream clients, fps, `audio`, `clips[]`, sensor settings, LED. |
+| `GET\|POST /play` | `?src=beeps` or `?src=<clip>` (the names in `clips[]` of `/status`), plus an optional `&vol=0..1000` (per-mille) to set the level with it. Returns immediately; playback happens in the audio task. **404** if the clip name does not exist. |
 | `GET\|POST /control` | Sensor settings, plus the lights: `mode=run\|torch\|hazard\|off`, `group=<name>&r/g/b` for one named group, `led_r/g/b` for the whole strip, and `vol=0..1000`. |
 | `GET\|POST /drive` | The motors: `?th=..&turn=..&twist=..` (mixer, per-mille ±1000) **or** `?fl=..&rl=..&rr=..&fr=..` (the raw four duties, all four required). |
 | `GET\|POST /stop` | `?mode=brake` (**default**) / `coast` / `disable`. A stop that coasts is not a stop, so brake is the default. |
@@ -536,7 +597,7 @@ In order, because this is the order they actually happen:
    pulled high.
 4. **`BCK`/`LRCK` ratio.** With `SCK` grounded the DAC recovers its system clock from
    `BCK`, which makes it fussy about the `BCK`-to-`LRCK` ratio. At 16-bit stereo this
-   firmware produces `44100 × 32 = 1.41 MHz`. If the output is silent, hissy, or
+   firmware produces `22050 × 32 = 705.6 kHz`. If the output is silent, hissy, or
    distorted beyond recognition, that ratio is the knob to turn — try
    `I2S_BITS_PER_SAMPLE_32BIT`, or move the DAC's `SCK` strap and feed it a real `MCLK`.
    This one is still an open empirical question, not something to assume either way.
@@ -553,7 +614,7 @@ In order, because this is the order they actually happen:
 
 1. ✅ The beeps are audible — done, and now on demand rather than at boot.
 2. ✅ The camera stream works — built and verified in `cam-test`, merged here.
-3. **Listen while streaming.** Press "sound file" with the video open. If it crackles,
+3. **Listen while streaming.** Press a **clip** button with the video open. If it crackles,
    lower the `framesize` **first** (`?framesize=qvga`) — §6's PSRAM bandwidth contention,
    not an audio bug. I²S buffers stay in internal RAM (the default); that is mitigation 1
    and it is already in place.
