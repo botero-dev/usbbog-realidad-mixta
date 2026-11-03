@@ -42,17 +42,33 @@ uint32_t fps();
 // strip (plan 2.1). The strip is the car's LIGHTING, and its pixels are named groups
 // (head/tail left and right, tail centre, floor) -- see `led_print_layout()`.
 //
-//   * RUN (the BOOT DEFAULT): head lights white and tail lights red, ALWAYS ON at
-//     20/255, with the floor sweeping the hue wheel at the same level.
-//   * TORCH: that same scene with the head lights at 128/255.
-//   * HAZARD: that same scene with the head and tail SIDE lights flashing yellow at
-//     64/255, about 1.25 Hz.
-//   * OFF: every pixel to zero. All lights dark, and it is a STATE rather than a
-//     one-off command so that "the lights are off" is something /status can report
-//     and the page can show -- not something you have to remember.
-//   * CUSTOM: a per-group scene. `?group=<name>&r/g/b` lights one named group, and
-//     the groups COMPOSE rather than replace -- the manual override underneath the
-//     automatic states above.
+// The state is THREE INDEPENDENT THINGS, not one mutually-exclusive mode, because
+// they are things a driver does at the same time:
+//
+//   * BASE -- a three-state switch, and the only one that decides whether the car
+//     has its running lights on at all:
+//       OFF    every pixel dark. A STATE, so "/status can say so".
+//       LOW    head lights white and tail lights red at 20/255  (the boot default).
+//       HIGH   the same scene at 128/255 -- high beams.
+//
+//   * HAZARD -- a toggle, applied ON TOP of the base. It flashes the head and tail
+//     SIDE lights yellow at 64/255, about 1.25 Hz. Between flashes the base shows
+//     through: hazard is an overlay, not a replacement, so "hazard while driving"
+//     lights the car normally and adds the flash. It also works with the base OFF,
+//     because a hazard warning that needs the headlights on is not a hazard warning.
+//
+//   * RAINBOW -- a toggle for the floor sweep alone. On (the boot default) the floor
+//     group turns through the hue wheel; off leaves it dark. It touches ONLY the
+//     floor, so it composes with both of the above.
+//
+// Precedence inside one frame, highest first: hazard flash > rainbow floor > base.
+// The three never fight, because they own disjoint groups -- hazard owns the four
+// side lights, rainbow owns the floor, base owns the rest.
+//
+// MANUAL (`?group=<name>&r/g/b`, `?led_r/g/b`) is the one state the firmware does not
+// animate: it is the escape hatch for settings groups by hand, and it is entered only
+// by an explicit colour write. Hazard and rainbow still apply over it, by the rule
+// above.
 //
 // What is deliberately NOT here any more: the old status indication (dim blue idle /
 // green streaming / white audio) and the whole-strip rainbow. The lights are on
@@ -63,13 +79,19 @@ uint32_t fps();
 // is not "dim", it is corrupted bit timing. Not with the core's `neopixelWrite()`
 // either: that sends exactly ONE pixel and the strip needs `kStripLeds` of them. See
 // the note above `strip_show()` in app_httpd.cpp.
-enum class LedMode { Run, Torch, Hazard, Off, Custom };
+enum class LedBase { Off, Low, High, Manual };
 
-// Set the lighting state. Takes effect on the next animation tick (<= 30 ms), which
-// is also what repaints it -- there is one renderer and this is not it.
-void led_set_mode(LedMode m);
+// Set the base state. Takes effect on the next animation tick (<= 30 ms), which is
+// also what repaints it -- there is one renderer and this is not it.
+void led_set_base(LedBase b);
 
-// Fill the whole strip with one colour, in the Custom state.
+// The two overlays. Independent of each other and of the base.
+void led_set_hazard(bool on);
+void led_set_rainbow(bool on);
+bool led_hazard();
+bool led_rainbow();
+
+// Fill the whole strip with one colour, in the Manual state.
 void led_set(uint8_t r, uint8_t g, uint8_t b);
 void led_get(uint8_t *r, uint8_t *g, uint8_t *b);
 

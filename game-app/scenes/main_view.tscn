@@ -9,6 +9,9 @@
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_grade"]
 shader = ExtResource("6_grade")
+
+[sub_resource type="ButtonGroup" id="ButtonGroup_lights"]
+allow_unpress = true
 shader_parameter/black_point = 0.15
 shader_parameter/grade_gamma = 1.02
 shader_parameter/contrast = 1.2
@@ -101,28 +104,45 @@ script = ExtResource("4_d2dgg")
 
 [node name="ControlLights" type="HBoxContainer" parent="ControlView" unique_id=1799918168]
 layout_mode = 0
-offset_right = 144.0
+offset_right = 460.0
 offset_bottom = 40.0
 
 [node name="Label" type="Label" parent="ControlView/ControlLights" unique_id=1828640757]
 layout_mode = 2
 text = "Lights: "
 
-[node name="ButtonLightsOff" type="Button" parent="ControlView/ControlLights" unique_id=1412194744]
+[node name="ButtonBaseOff" type="Button" parent="ControlView/ControlLights" unique_id=2011000001]
 layout_mode = 2
+toggle_mode = true
+button_group = SubResource("ButtonGroup_lights")
 text = "Off"
 
-[node name="ButtonLightsOn" type="Button" parent="ControlView/ControlLights" unique_id=1859383815]
+[node name="ButtonBaseLow" type="Button" parent="ControlView/ControlLights" unique_id=2011000002]
 layout_mode = 2
-text = "On"
+toggle_mode = true
+button_group = SubResource("ButtonGroup_lights")
+button_pressed = true
+text = "Low"
 
-[node name="ButtonLightsTorch" type="Button" parent="ControlView/ControlLights" unique_id=1199971599]
+[node name="ButtonBaseHigh" type="Button" parent="ControlView/ControlLights" unique_id=2011000003]
 layout_mode = 2
-text = "Torch"
+toggle_mode = true
+button_group = SubResource("ButtonGroup_lights")
+text = "High"
 
-[node name="ButtonLightsHazard" type="Button" parent="ControlView/ControlLights" unique_id=636534621]
+[node name="LightSeparator" type="VSeparator" parent="ControlView/ControlLights" unique_id=2011000004]
 layout_mode = 2
+
+[node name="ButtonHazard" type="Button" parent="ControlView/ControlLights" unique_id=2011000005]
+layout_mode = 2
+toggle_mode = true
 text = "Hazard"
+
+[node name="ButtonRainbow" type="Button" parent="ControlView/ControlLights" unique_id=2011000006]
+layout_mode = 2
+toggle_mode = true
+button_pressed = true
+text = "Rainbow"
 
 [node name="ControlSounds" type="HBoxContainer" parent="ControlView" unique_id=391976089]
 layout_mode = 1

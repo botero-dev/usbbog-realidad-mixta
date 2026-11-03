@@ -7,16 +7,27 @@ extends Control
 @onready var video: TextureRect = $ControlView/Video
 @onready var resolution_button: Button = $ControlView/ResolutionButton
 @onready var stats_label: Label = $ControlView/StatsLabel
+@onready var base_off: Button = $ControlView/ControlLights/ButtonBaseOff
+@onready var base_low: Button = $ControlView/ControlLights/ButtonBaseLow
+@onready var base_high: Button = $ControlView/ControlLights/ButtonBaseHigh
+@onready var hazard_button: Button = $ControlView/ControlLights/ButtonHazard
+@onready var rainbow_button: Button = $ControlView/ControlLights/ButtonRainbow
 @onready var camera: CameraSource = $CameraFeed
 
 var _got_frame := false
 var _control_http: HTTPRequest
 var _status_http: HTTPRequest
+var _led_http: HTTPRequest
 var _resolution := "vga"
 var _pending_resolution := ""
 var _status_busy := false
 var _stats_elapsed := 0.0
 var _grade_material: Material
+var _led_busy := false
+var _led_pending := ""
+# Set while pushing the board's state into the buttons: assigning button_pressed
+# emits toggled, and that must not be sent back to the board as a new command.
+var _applying_led_state := false
 
 
 func _ready() -> void:
@@ -43,8 +54,19 @@ func _ready() -> void:
 	_status_http.request_completed.connect(_on_status_completed)
 	add_child(_status_http)
 
+	_led_http = HTTPRequest.new()
+	_led_http.timeout = 5.0
+	_led_http.request_completed.connect(_on_led_completed)
+	add_child(_led_http)
+
 	resolution_button.pressed.connect(_on_resolution_pressed)
 	_set_resolution(_resolution)
+
+	base_off.pressed.connect(func(): _request_led("base=off"))
+	base_low.pressed.connect(func(): _request_led("base=low"))
+	base_high.pressed.connect(func(): _request_led("base=high"))
+	hazard_button.toggled.connect(_on_hazard_toggled)
+	rainbow_button.toggled.connect(_on_rainbow_toggled)
 
 
 func _process(delta: float) -> void:
@@ -115,8 +137,10 @@ func _on_status_completed(
 	if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
 		return
 	var parsed: Variant = JSON.parse_string(body.get_string_from_utf8())
-	if parsed is Dictionary and parsed.has("framesize"):
-		_set_resolution(str(parsed["framesize"]).to_lower())
+	if parsed is Dictionary:
+		if parsed.has("framesize"):
+			_set_resolution(str(parsed["framesize"]).to_lower())
+		_apply_led_state(parsed)
 
 
 func _on_resolution_pressed() -> void:
@@ -155,3 +179,74 @@ func _on_control_completed(
 func _set_resolution(name: String) -> void:
 	_resolution = name
 	resolution_button.text = "Resolution: " + _resolution.to_upper()
+
+
+# --- lights ---------------------------------------------------------------
+#
+# The board owns the light state, so every request's reply is the truth: /control
+# answers with the same JSON as /status, and the buttons are set from THAT rather
+# than from what was asked for. A request the sensor or the firmware refused then
+# simply leaves the button showing the real state instead of a lie.
+
+func _on_hazard_toggled(pressed: bool) -> void:
+	if _applying_led_state:
+		return
+	_request_led("hazard=%d" % (1 if pressed else 0))
+
+
+func _on_rainbow_toggled(pressed: bool) -> void:
+	if _applying_led_state:
+		return
+	_request_led("rainbow=%d" % (1 if pressed else 0))
+
+
+func _request_led(query: String) -> void:
+	# Requests never overlap: the newest one is sent when the board answers. Rapid
+	# clicking therefore settles on the last click instead of racing.
+	if _led_busy:
+		_led_pending = query
+		return
+	_led_busy = true
+	var error := _led_http.request(
+		"http://%s/control?%s" % [camera.target(), query]
+	)
+	if error != OK:
+		_led_busy = false
+		push_warning("could not send %s (error %d)" % [query, error])
+
+
+func _on_led_completed(
+	result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray
+) -> void:
+	_led_busy = false
+
+	if result == HTTPRequest.RESULT_SUCCESS and response_code == 200:
+		var parsed: Variant = JSON.parse_string(body.get_string_from_utf8())
+		if parsed is Dictionary:
+			_apply_led_state(parsed)
+	else:
+		push_warning(
+			"light command failed: HTTP %d %s"
+			% [response_code, body.get_string_from_utf8().strip_edges()]
+		)
+
+	if not _led_pending.is_empty():
+		var next := _led_pending
+		_led_pending = ""
+		_request_led(next)
+
+
+func _apply_led_state(state: Dictionary) -> void:
+	_applying_led_state = true
+	if state.has("led_base"):
+		var base := str(state["led_base"])
+		# "manual" is not reachable from this UI, but /control?led_r=.. can put the
+		# board there; then none of the three is the truth, and all stay unpressed.
+		base_off.button_pressed = base == "off"
+		base_low.button_pressed = base == "low"
+		base_high.button_pressed = base == "high"
+	if state.has("led_hazard"):
+		hazard_button.button_pressed = int(state["led_hazard"]) != 0
+	if state.has("led_rainbow"):
+		rainbow_button.button_pressed = int(state["led_rainbow"]) != 0
+	_applying_led_state = false

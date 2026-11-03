@@ -64,10 +64,13 @@ constexpr char STREAM_PART[] =
 volatile uint32_t g_stream_clients = 0;
 volatile uint32_t g_fps = 0;
 
-// The lights' current state. `LedMode` itself lives in app_httpd.h -- it is the
-// strip's public contract -- and the boot default is Run, the always-on scene, not a
-// demo effect: the car's lights come on with the car.
-LedMode g_led_mode = LedMode::Run;
+// The lights' current state. `LedBase` itself lives in app_httpd.h -- it is the
+// strip's public contract. Three independent things, not one mode: see the header.
+// The boot default is LOW + rainbow, the always-on scene: the car's lights come on
+// with the car.
+LedBase g_led_base = LedBase::Low;
+bool g_led_hazard = false;
+bool g_led_rainbow = true;
 uint8_t g_led_r = 0, g_led_g = 0, g_led_b = 0;
 // Where the floor's sweep is, in BYTE hue: a full turn is 256, so it wraps with a
 // plain uint8_t add and there is no 360-vs-0 branch to get wrong.
@@ -157,9 +160,19 @@ constexpr bool groups_tile(size_t i, int expected_first) {
 static_assert(groups_tile(0, 0),
               "LED groups must tile 0..kStripLeds-1: no gap, no overlap, no extras");
 
-// THE frame: what the LEDs are showing. The renderer builds it for Run/Torch/Hazard,
-// a group write or a manual colour edits it in Custom, and led_push() sends it.
+// THE frame: what the LEDs are showing. The renderer builds it from the base state
+// and the two overlays, a manual colour write edits it in Manual, and led_push()
+// sends it.
 uint8_t g_scene[kStripLeds * 3];
+
+// The Manual scene, kept as a SNAPSHOT rather than read back out of g_scene.
+//
+// Without it, Manual and an overlay conflict: hazard would write the side lights
+// yellow, and on the OFF half of the flash there is nothing to restore them FROM,
+// so the flash would stick on. Snapshotting makes Manual behave like any other base
+// state -- rebuilt from its own source every frame -- which is what lets the rule
+// "hazard and rainbow apply on top of everything" hold without a special case.
+uint8_t g_manual[kStripLeds * 3];
 
 // The frame as last sent, so an identical one is not pushed again. The write
 // BLOCKS the caller for ~1.4 ms (see strip_show), and led_task() pushes the
@@ -169,23 +182,27 @@ bool g_applied_valid = false;
 
 uint32_t g_led_last_ms = 0;
 
-// --- the always-on scene, and the two overrides ----------------------------
+// --- the base scene, and the two overlays ---------------------------------
 //
-// "Head and tail always on, the floor sweeping" is the car's DEFAULT state (user,
+// "Head and tail on, the floor sweeping" is the car's DEFAULT state (user,
 // 2026-10-12), so none of this is a demo effect. Every level is a fraction of full
 // scale applied through level_channel(), which keeps a colour and a brightness
 // independent: "make the tail red" and "make the tail dimmer" are separate one-line
 // changes instead of a hunt for a literal.
-constexpr uint8_t kAmbientLevel = 20;  // head + tail, always on
-constexpr uint8_t kFloorLevel = 20;    // the floor's sweep
-constexpr uint8_t kHazardLevel = 64;   // the flashing side lights
-constexpr uint8_t kTorchLevel = 128;   // the head lights, torch on
+//
+// The two base levels are the three-state switch's LOW and HIGH. LOW is the old
+// ambient 20 and HIGH is the old torch 128, kept as the same numbers so the switch
+// reproduces exactly what the car did before, only for the tail as well as the head:
+// "high lights" that brighten only half the car would be a surprise.
+constexpr uint8_t kLevelLow = 20;     // base LOW: head + tail
+constexpr uint8_t kLevelHigh = 128;   // base HIGH: head + tail
+constexpr uint8_t kFloorLevel = 20;   // the floor's sweep, when rainbow is on
+constexpr uint8_t kHazardLevel = 64;  // the flashing side lights
 
 // Head white, tail red -- car-conventional, and stated once so "what colour is the
 // tail?" has exactly one answer.
 constexpr uint8_t kHeadRGB[3] = {255, 255, 255};
 constexpr uint8_t kTailRGB[3] = {255, 0, 0};
-constexpr uint8_t kBlackRGB[3] = {0, 0, 0};
 // Yellow, as asked. Amber (255,160,0) is what a real indicator looks like -- that is
 // a one-line change here if the flash should read as a turn signal.
 constexpr uint8_t kHazardRGB[3] = {255, 255, 0};
@@ -337,13 +354,12 @@ uint8_t clamp8(int v) {
 constexpr uint32_t kAnimIntervalMs = 30;
 constexpr uint8_t kRainbowStep = 3;  // 256/3 ticks x 30 ms = about 2.6 s per turn
 
-const char *led_mode_name(LedMode m) {
-  switch (m) {
-    case LedMode::Torch: return "torch";
-    case LedMode::Hazard: return "hazard";
-    case LedMode::Off: return "off";
-    case LedMode::Custom: return "custom";
-    default: return "run";
+const char *led_base_name(LedBase b) {
+  switch (b) {
+    case LedBase::Low: return "low";
+    case LedBase::High: return "high";
+    case LedBase::Off: return "off";
+    default: return "manual";
   }
 }
 
@@ -434,45 +450,44 @@ void scene_floor_sweep() {
 }
 
 void scene_render(uint32_t now_ms) {
-  // OFF: every pixel to zero. It is rendered on the normal tick rather than sent once
-  // and then left, which costs a 1.4 ms write every 30 ms to hold a dark strip -- and
-  // buys back the ability to RECOVER. A strip that loses a frame (a marginal data line,
-  // a supply dip) is repainted 30 ms later instead of staying wrong until the next
-  // command. With the strip's data level still unverified, that matters more than the
-  // 5 % of an otherwise empty loop().
-  if (g_led_mode == LedMode::Off) {
+  // Start every frame from a known state. Two reasons, both real bugs if skipped:
+  // a Manual scene must not leak pixels into a base state set after it, and the OFF
+  // half of a hazard flash must restore whatever was underneath rather than leave
+  // the flash stuck on.
+  if (g_led_base == LedBase::Manual) {
+    memcpy(g_scene, g_manual, sizeof(g_scene));
+  } else {
     scene_fill(0, 0, 0);
-    return;
-  }
 
-  // Head and tail: always on. These five lines are the whole promise.
-  scene_set_group(LedGroup::HeadLeft, kHeadRGB, kAmbientLevel);
-  scene_set_group(LedGroup::HeadRight, kHeadRGB, kAmbientLevel);
-  scene_set_group(LedGroup::TailLeft, kTailRGB, kAmbientLevel);
-  scene_set_group(LedGroup::TailCentre, kTailRGB, kAmbientLevel);
-  scene_set_group(LedGroup::TailRight, kTailRGB, kAmbientLevel);
-
-  if (g_led_mode == LedMode::Torch) {
-    scene_set_group(LedGroup::HeadLeft, kHeadRGB, kTorchLevel);
-    scene_set_group(LedGroup::HeadRight, kHeadRGB, kTorchLevel);
-  }
-
-  if (g_led_mode == LedMode::Hazard) {
-    // The flash is derived from the CLOCK, not toggled from a counter, so a missed or
-    // late tick cannot make it drift or stick on. Off means OFF: a hazard flashes, so
-    // the side lights go dark for half the period rather than falling back to their
-    // running lights -- falling back would read as a colour change, not a flash.
-    const bool on = ((now_ms / kHazardHalfMs) & 1u) == 0;
-    for (size_t i = 0; i < kHazardGroupCount; ++i) {
-      if (on) {
-        scene_set_group(kHazardGroups[i], kHazardRGB, kHazardLevel);
-      } else {
-        scene_set_group(kHazardGroups[i], kBlackRGB, 255);  // black at any level
-      }
+    if (g_led_base != LedBase::Off) {
+      const uint8_t level =
+          (g_led_base == LedBase::High) ? kLevelHigh : kLevelLow;
+      scene_set_group(LedGroup::HeadLeft, kHeadRGB, level);
+      scene_set_group(LedGroup::HeadRight, kHeadRGB, level);
+      scene_set_group(LedGroup::TailLeft, kTailRGB, level);
+      scene_set_group(LedGroup::TailCentre, kTailRGB, level);
+      scene_set_group(LedGroup::TailRight, kTailRGB, level);
     }
   }
 
-  scene_floor_sweep();
+  // RAINBOW: the floor, and only the floor. Off leaves whatever the base left there,
+  // which for LOW/HIGH/OFF is black -- the floor is not part of the running lights.
+  // With the base OFF this still lights the floor, deliberately: rainbow is an
+  // independent switch, so "underglow only" is a look you can ask for.
+  if (g_led_rainbow) {
+    scene_floor_sweep();
+  }
+
+  // HAZARD last, so it wins over everything above -- that is what "on top" means.
+  // Only on the ON half of the clock: on the off half this branch does nothing at
+  // all, so the base shows through and the lights read as a FLASH rather than as a
+  // colour change. Derived from the CLOCK, not toggled from a counter, so a missed or
+  // late tick cannot make it drift or stick on.
+  if (g_led_hazard && ((now_ms / kHazardHalfMs) & 1u) == 0) {
+    for (size_t i = 0; i < kHazardGroupCount; ++i) {
+      scene_set_group(kHazardGroups[i], kHazardRGB, kHazardLevel);
+    }
+  }
 }
 
 // --- the strip's data, N pixels at a time ---------------------------------
@@ -578,10 +593,11 @@ bool led_push(const uint8_t *rgb, int n) {
 }
 
 // One colour across the whole strip. This is the MANUAL override, so it lands in
-// Custom -- the state the renderer deliberately leaves alone.
+// Manual -- the base state the renderer deliberately leaves alone.
 void led_apply(uint8_t r, uint8_t g, uint8_t b) {
   scene_fill(r, g, b);
-  g_led_mode = LedMode::Custom;
+  memcpy(g_manual, g_scene, sizeof(g_scene));
+  g_led_base = LedBase::Manual;
   led_push(g_scene, kStripLeds);
 }
 
@@ -596,13 +612,19 @@ bool led_group_parse(const char *name, LedGroup *out) {
   return false;
 }
 
-// Light ONE group and switch to Custom, where the scene is the display. Only that
+// Light ONE group and switch to Manual, where the scene is the display. Only that
 // group's pixels are written, so the groups COMPOSE rather than replace: set the
 // tail, then the head, then the floor, and all three stay set.
 bool led_set_group(LedGroup which, uint8_t r, uint8_t g, uint8_t b) {
   const uint8_t rgb[3] = {r, g, b};
+  // Start from the snapshot when entering Manual, so a group write builds on the
+  // previous Manual scene rather than on whatever the last base frame happened to be.
+  if (g_led_base == LedBase::Manual) {
+    memcpy(g_scene, g_manual, sizeof(g_scene));
+  }
   scene_set_group(which, rgb, 255);  // level 255 writes the components as given
-  g_led_mode = LedMode::Custom;
+  memcpy(g_manual, g_scene, sizeof(g_scene));
+  g_led_base = LedBase::Manual;
   return led_push(g_scene, kStripLeds);
 }
 
@@ -699,12 +721,17 @@ a clip to <code>audio/</code> needs no edit here. One press plays one clip.</p>
 <button class="lv" data-vol="100" onclick="ask('/control?vol=100')">high</button>
 <button class="lv" data-vol="200" onclick="ask('/control?vol=200')">very high</button>
 </p>
-<p class="lbl">lights &mdash; <b id="ledstat">run</b></p>
+<p class="lbl">lights &mdash; <b id="ledstat">low + rainbow</b></p>
 <p>
-<button class="lv" id="ledrun" onclick="ask('/control?mode=run')">run</button>
-<button class="lv" id="ledtor" onclick="ask('/control?mode=torch')">torch</button>
-<button class="lv" id="ledhaz" onclick="ask('/control?mode=hazard')">hazard</button>
-<button class="lv" id="ledoff" onclick="ask('/control?mode=off')">off</button>
+<button class="lv" id="ledoff" onclick="ask('/control?base=off')">off</button>
+<button class="lv" id="ledlow" onclick="ask('/control?base=low')">low</button>
+<button class="lv" id="ledhigh" onclick="ask('/control?base=high')">high</button>
+</p>
+<p>
+<button class="lv" id="ledhaz" onclick="ask('/control?hazard=1')">hazard on</button>
+<button class="lv" id="ledhazoff" onclick="ask('/control?hazard=0')">hazard off</button>
+<button class="lv" id="ledrb" onclick="ask('/control?rainbow=1')">rainbow on</button>
+<button class="lv" id="ledrboff" onclick="ask('/control?rainbow=0')">rainbow off</button>
 </p>
 <script>
 // The stream lives on its OWN PORT, because it gets its own server task: its
@@ -768,14 +795,21 @@ function show(j){
 
   // The lighting state is the board's to decide, so every reply that carries it wins.
   // These buttons are INDICATORS, not toggles: none of them assumes a state, which is
-  // also what lets a mode set by curl show up correctly on the page.
-  if(j.led_mode !== undefined){
-    var lm = j.led_mode;
-    document.getElementById('ledrun').className = (lm === 'run') ? 'lv on' : 'lv';
-    document.getElementById('ledtor').className = (lm === 'torch') ? 'lv on' : 'lv';
-    document.getElementById('ledhaz').className = (lm === 'hazard') ? 'lv on' : 'lv';
-    document.getElementById('ledoff').className = (lm === 'off') ? 'lv on' : 'lv';
-    document.getElementById('ledstat').textContent = lm;
+  // also what lets a setting made by curl show up correctly on the page. The two
+  // overlays get an on button and an off button for the same reason -- a single toggle
+  // would have to assume what the board is currently doing.
+  if(j.led_base !== undefined){
+    var lb = j.led_base;
+    document.getElementById('ledoff').className = (lb === 'off') ? 'lv on' : 'lv';
+    document.getElementById('ledlow').className = (lb === 'low') ? 'lv on' : 'lv';
+    document.getElementById('ledhigh').className = (lb === 'high') ? 'lv on' : 'lv';
+    var hz = !!j.led_hazard, rb = !!j.led_rainbow;
+    document.getElementById('ledhaz').className = hz ? 'lv on' : 'lv';
+    document.getElementById('ledhazoff').className = hz ? 'lv' : 'lv on';
+    document.getElementById('ledrb').className = rb ? 'lv on' : 'lv';
+    document.getElementById('ledrboff').className = rb ? 'lv' : 'lv on';
+    document.getElementById('ledstat').textContent = lb +
+        (hz ? ' + hazard' : '') + (rb ? ' + rainbow' : '');
   }
 }
 
@@ -1116,7 +1150,8 @@ esp_err_t send_status_json(httpd_req_t *req) {
       "\"framesize\":\"%s\",\"quality\":%d,\"brightness\":%d,\"contrast\":%d,"
       "\"saturation\":%d,\"hmirror\":%d,\"vflip\":%d,"
       "\"audio\":\"%s\",\"sample_rate\":%u,\"volume_milli\":%u,"
-      "\"led_mode\":\"%s\",\"led\":[%u,%u,%u],",
+      "\"led_base\":\"%s\",\"led_hazard\":%d,\"led_rainbow\":%d,"
+      "\"led\":[%u,%u,%u],",
       (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getFreePsram(),
       (unsigned)WiFi.softAPgetStationNum(), (unsigned)g_stream_clients,
       (unsigned)g_fps,
@@ -1126,8 +1161,8 @@ esp_err_t send_status_json(httpd_req_t *req) {
       s ? (int)s->status.hmirror : 0, s ? (int)s->status.vflip : 0,
       audio_now_playing(), (unsigned)audio_sample_rate(),
       (unsigned)(audio_volume() * 1000.0f + 0.5f),
-      led_mode_name(g_led_mode), (unsigned)g_led_r, (unsigned)g_led_g,
-      (unsigned)g_led_b);
+      led_base_name(g_led_base), g_led_hazard ? 1 : 0, g_led_rainbow ? 1 : 0,
+      (unsigned)g_led_r, (unsigned)g_led_g, (unsigned)g_led_b);
 
   // A Pico that has never replied has no age. `null` is honest and parses; the
   // raw 0xFFFFFFFF would be a number a client would believe.
@@ -1254,9 +1289,15 @@ esp_err_t play_handler(httpd_req_t *req) {
 //   quality=0..63              lower = better quality, bigger frames
 //   brightness, contrast, saturation = -2..2
 //   hmirror, vflip = 0|1
-//   mode = run|torch|hazard|off the car's lighting state (see app_httpd.h)
-//   group = <name> + r,g,b = 0..255  lights ONE group and opens the Custom mode
-//   led_r, led_g, led_b = 0..255   fills the whole strip (also Custom)
+//   base = off|low|high       the three-state running-lights switch
+//   hazard = 0|1              flash the side lights, on top of `base`
+//   rainbow = 0|1             sweep the floor, independently of `base`
+//   mode = run|torch|hazard|off   legacy alias for the switch above:
+//                             run -> base=low, torch -> base=high, off -> base=off,
+//                             hazard -> hazard=1 (it no longer clears the base, which
+//                             would surprise anyone upgrading; use base=off for that)
+//   group = <name> + r,g,b = 0..255  lights ONE group and opens the Manual state
+//   led_r, led_g, led_b = 0..255   fills the whole strip (also Manual)
 //
 // A request that carries `group` is ALWAYS a group write and nothing else: it is
 // handled and answered on its own, so `group` and `led_r/g/b` can never be confused
@@ -1323,25 +1364,53 @@ esp_err_t control_handler(httpd_req_t *req) {
     return send_status_json(req);
   }
 
-  // The lighting state first, so a request carrying both a mode and a colour ends up
-  // on the mode.
-  if (param_str(params, "mode", v, sizeof(v))) {
-    if (strcmp(v, "run") == 0) {
-      led_set_mode(LedMode::Run);
-    } else if (strcmp(v, "torch") == 0) {
-      led_set_mode(LedMode::Torch);
-    } else if (strcmp(v, "hazard") == 0) {
-      led_set_mode(LedMode::Hazard);
-    } else if (strcmp(v, "off") == 0) {
-      led_set_mode(LedMode::Off);
+  // The lighting state first, so a request carrying both a switch and a colour ends up
+  // on the switch.
+  if (param_str(params, "base", v, sizeof(v))) {
+    if (strcmp(v, "off") == 0) {
+      led_set_base(LedBase::Off);
+    } else if (strcmp(v, "low") == 0) {
+      led_set_base(LedBase::Low);
+    } else if (strcmp(v, "high") == 0) {
+      led_set_base(LedBase::High);
     } else {
       return httpd_resp_send_err(
           req, HTTPD_400_BAD_REQUEST,
-          "{\"error\":\"mode must be run, torch, hazard or off\"}");
+          "{\"error\":\"base must be off, low or high\"}");
+    }
+    Serial.printf("[http] /control base=%s\n", v);
+  }
+
+  if (param_int(params, "hazard", &n)) {
+    led_set_hazard(n != 0);
+    Serial.printf("[http] /control hazard=%d\n", n != 0 ? 1 : 0);
+  }
+
+  if (param_int(params, "rainbow", &n)) {
+    led_set_rainbow(n != 0);
+    Serial.printf("[http] /control rainbow=%d\n", n != 0 ? 1 : 0);
+  }
+
+  // The pre-2026-11 spelling, kept so existing curl commands and the README's examples
+  // keep working. It sets the SAME three things as above.
+  if (param_str(params, "mode", v, sizeof(v))) {
+    if (strcmp(v, "run") == 0) {
+      led_set_base(LedBase::Low);
+    } else if (strcmp(v, "torch") == 0) {
+      led_set_base(LedBase::High);
+    } else if (strcmp(v, "hazard") == 0) {
+      led_set_hazard(true);
+    } else if (strcmp(v, "off") == 0) {
+      led_set_base(LedBase::Off);
+    } else {
+      return httpd_resp_send_err(
+          req, HTTPD_400_BAD_REQUEST,
+          "{\"error\":\"mode must be run, torch, hazard or off -- or use "
+          "base=off|low|high with hazard= and rainbow=\"}");
     }
     // Logged like /play and /drive, for the same reason: "the lights did nothing"
     // has to split into never arrived vs arrived with a bad value.
-    Serial.printf("[http] /control mode=%s\n", v);
+    Serial.printf("[http] /control mode=%s (legacy)\n", v);
   }
 
   bool touched_led = false;
@@ -1605,7 +1674,14 @@ void led_set(uint8_t r, uint8_t g, uint8_t b) {
 // Changing state does NOT repaint here: led_task()'s renderer is the only thing that
 // knows how to build a frame, and for Run/Torch/Hazard it runs within 30 ms. Doing it
 // in two places is how the two would drift apart.
-void led_set_mode(LedMode m) { g_led_mode = m; }
+// Changing state does NOT repaint here: led_task()'s renderer is the only thing that
+// builds a frame, and it runs every 30 ms. Doing it here as well would mean two
+// renderers racing over g_scene.
+void led_set_base(LedBase b) { g_led_base = b; }
+void led_set_hazard(bool on) { g_led_hazard = on; }
+void led_set_rainbow(bool on) { g_led_rainbow = on; }
+bool led_hazard() { return g_led_hazard; }
+bool led_rainbow() { return g_led_rainbow; }
 
 // Print the layout from kGroups, so the boot banner cannot drift from the table
 // that led_set_group() actually uses.
@@ -1625,15 +1701,20 @@ void led_get(uint8_t *r, uint8_t *g, uint8_t *b) {
 }
 
 void led_task(uint32_t now_ms) {
-  // Custom is the one state the firmware does NOT animate: the scene is whatever the
-  // last group write made it, and rebuilding it here would throw the user's work away
-  // 30 ms after they did it.
-  if (g_led_mode == LedMode::Custom) return;
-
+  // Manual is the one base state the firmware does NOT rebuild: the scene is whatever
+  // the last colour write made it, and rebuilding it here would throw the user's work
+  // away 30 ms after they did it. The overlays still apply -- see scene_render().
+  //
+  // The floor hue is stepped here rather than only when rainbow is on, so that
+  // switching rainbow back on continues the sweep instead of snapping to a stale
+  // position.
   if (now_ms - g_led_last_ms < kAnimIntervalMs) return;
   g_led_last_ms = now_ms;
 
   g_floor_hue = (uint8_t)(g_floor_hue + kRainbowStep);
+
+  if (g_led_base == LedBase::Manual && !g_led_hazard && !g_led_rainbow) return;
+
   scene_render(now_ms);
   led_push(g_scene, kStripLeds);
 }

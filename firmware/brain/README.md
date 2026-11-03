@@ -150,7 +150,7 @@ otherwise is silent: everything plays at the wrong pitch and nothing reports it.
 | `GET /capture` | One JPEG snapshot. |
 | `GET /status` | JSON: heap, PSRAM, stream clients, fps, `audio`, `clips[]`, sensor settings, LED. |
 | `GET\|POST /play` | `?src=beeps` or `?src=<clip>` (the names in `clips[]` of `/status`), plus an optional `&vol=0..1000` (per-mille) to set the level with it. Returns immediately; playback happens in the audio task. **404** if the clip name does not exist. |
-| `GET\|POST /control` | Sensor settings, plus the lights: `mode=run\|torch\|hazard\|off`, `group=<name>&r/g/b` for one named group, `led_r/g/b` for the whole strip, and `vol=0..1000`. |
+| `GET\|POST /control` | Sensor settings, plus the lights: `base=off\|low\|high`, `hazard=0\|1`, `rainbow=0\|1`, `group=<name>&r/g/b` for one named group, `led_r/g/b` for the whole strip, and `vol=0..1000`. `mode=run\|torch\|hazard\|off` still works as a legacy alias. |
 | `GET\|POST /drive` | The motors: `?th=..&turn=..&twist=..` (mixer, per-mille ±1000) **or** `?fl=..&rl=..&rr=..&fr=..` (the raw four duties, all four required). |
 | `GET\|POST /stop` | `?mode=brake` (**default**) / `coast` / `disable`. A stop that coasts is not a stop, so brake is the default. |
 
@@ -202,21 +202,38 @@ so pressing "beeps" would look like it had stopped the video.
 car and stays on. The pixels are named groups (see *The layout* below), and the firmware's
 default state is an always-on scene.
 
-| State | Set with | What it is |
+| Base | Set with | What it is |
 | --- | --- | --- |
-| `run` | `?mode=run` | **the boot default**: head lights white and tail lights red, always on at 20/255, with the floor sweeping the hue wheel at the same level |
-| `torch` | `?mode=torch` | that same scene with the head lights at **128/255** |
-| `hazard` | `?mode=hazard` | that same scene with the head and tail **side** lights flashing yellow at **64/255**, ~1.25 Hz || `off` | `?mode=off` | every pixel to zero — all lights dark || `custom` | `?group=..&r/g/b`, or `?led_r/g/b` | a manual per-group scene — the override underneath the three automatic states |
+| `low` | `?base=low` | **the boot default**: head lights white and tail lights red at 20/255 |
+| `high` | `?base=high` | the same scene at **128/255** — high beams |
+| `off` | `?base=off` | every pixel to zero — all lights dark |
+| `manual` | `?group=..&r/g/b`, or `?led_r/g/b` | a manual per-group scene; not reachable from the switches |
 
-Run, Torch and Hazard are **the same scene differing in one override**, and they share a
-single builder (`scene_render()`). That is deliberate, not tidiness: there is exactly one
-place the tail lights are turned on, so there is no state in which they can be forgotten.
+| Overlay | Set with | What it is |
+| --- | --- | --- |
+| hazard | `?hazard=1` / `?hazard=0` | the head and tail **side** lights flash yellow at **64/255**, ~1.25 Hz, **on top of the base** |
+| rainbow | `?rainbow=1` / `?rainbow=0` | the **floor** group turns through the hue wheel; **on** at boot |
 
-`/status` reports the state as `led_mode`, and the page's **run / torch / hazard / off**
-buttons are *indicators*, not toggles — none of them assumes a state, so a state set by `curl`
-shows up on the page correctly. `hazard` flashes **off and on** rather than switching colour:
-falling back to the running lights for the off half would read as a colour change, not a
-flash.
+The state is **three independent things, not one mode**, because they are things a driver does
+at the same time. Inside one frame the precedence is **hazard flash > rainbow floor > base**,
+and the three never fight because they own disjoint groups: hazard the four side lights,
+rainbow the floor, base the rest. That is why "hazard while driving" lights the car normally
+and adds the flash, rather than replacing the running lights.
+
+Two consequences worth stating, because they look like bugs until you know the rule:
+
+- **Hazard works with the base off.** A hazard warning that needs the headlights on is not a
+  hazard warning, so `base=off&hazard=1` flashes the side lights over a dark car.
+- **Rainbow works with the base off.** It is an independent switch, so `base=off&rainbow=1`
+  is underglow only. Turn both off for a fully dark car.
+
+`/status` reports `led_base`, `led_hazard` and `led_rainbow`, and the page's buttons are
+*indicators*, not toggles — none of them assumes a state, so a setting made by `curl` shows up
+on the page correctly. The two overlays get an **on** button and an **off** button for the same
+reason: one toggle would have to assume what the board is currently doing.
+
+`hazard` flashes **off and on** rather than switching colour: falling back to the running
+lights for the off half would read as a colour change, not a flash.
 
 `off` is a **state**, not a one-off command, so "the lights are off" is something `/status`
 reports and the page can show rather than something you have to remember. It is re-sent on
@@ -227,8 +244,8 @@ than 5 % of an otherwise empty `loop()` while the strip's data level is still un
 
 > **`off` is not a useful corruption test**, precisely because it re-sends and because a
 > wrong colour on a strip that should be dark is invisible. To test the data path, hold a
-> *visible* static frame in **custom** instead — `?led_r=20&led_g=20&led_b=20` sends once and
-> then the firmware stops writing entirely, so any flicker after that is hardware.
+> *visible* static frame in **manual** instead — `?led_r=20&led_g=20&led_b=20&rainbow=0` sends
+> once and then the firmware stops writing entirely, so any flicker after that is hardware.
 
 **What is gone, deliberately.** The old status indication (dim blue idle / green streaming /
 white audio) and the whole-strip rainbow. The lights are on whenever the car is, so the strip
@@ -318,9 +335,11 @@ curl 'http://192.168.4.1/control?group=floor&b=255'           # floor blue, rest
 
 Missing `r`/`g`/`b` in a group write are 0, and a request carrying `group` is *always* a group
 write — handled on its own — so it can never be confused with the whole-strip `led_r/g/b`.
-A group write and a whole-strip colour both land in **Custom** and stay there: the renderer
-deliberately leaves that state alone, because rebuilding it 30 ms later would throw the
-user's work away. `?mode=run` (or torch, or hazard) is how you hand it back to the renderer.
+A group write and a whole-strip colour both land in **Manual** and stay there: the renderer
+deliberately does not rebuild that state, because doing so 30 ms later would throw the user's
+work away. `?base=off|low|high` is how you hand it back to the renderer. Hazard and rainbow
+still apply over a Manual scene, which is why "hazard flashed once and stuck on" is not
+possible: the Manual frame is snapshotted and re-applied every tick.
 
 To check the order is real, light the groups one at a time and count them:
 `?group=tail_right&r=255`, then `tail_centre`, `tail_left`, `floor` (17 pixels — the long one),
