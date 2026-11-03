@@ -4,6 +4,7 @@
 [ext_resource type="Script" uid="uid://bcbcjxi5fsvt7" path="res://scripts/main_view.gd" id="1_lc11k"]
 [ext_resource type="Texture2D" uid="uid://7bpb3rrg2jc7" path="res://icon.svg" id="2_urgos"]
 [ext_resource type="Script" uid="uid://dxkfgo7g2qb3y" path="res://scripts/hud.gd" id="4_d2dgg"]
+[ext_resource type="Script" uid="uid://b4pgqrl0wjgxa" path="res://scripts/camera_stream_mjpeg.gd" id="5_cam"]
 
 [node name="MainView" type="Control" unique_id=685966271]
 layout_mode = 3
@@ -39,6 +40,26 @@ grow_horizontal = 2
 grow_vertical = 2
 theme_override_font_sizes/font_size = 49
 text = "Connect to 192.168.4.1"
+
+[node name="StatusLabel" type="Label" parent="ConnectView" unique_id=1067516459]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -300.0
+offset_top = 46.0
+offset_right = 300.0
+offset_bottom = 118.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_font_sizes/font_size = 22
+horizontal_alignment = 1
+autowrap_mode = 3
+
+[node name="CameraFeed" type="Node" parent="." unique_id=1127673103]
+script = ExtResource("5_cam")
 
 [node name="ControlView" type="Control" parent="." unique_id=1541792319]
 layout_mode = 1
