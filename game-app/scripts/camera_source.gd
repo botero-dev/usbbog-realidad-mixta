@@ -23,8 +23,16 @@ signal stream_closed(reason: String)
 ## assign it to a TextureRect rather than keeping references to old ones.
 signal frame_received(texture: Texture2D)
 
-## Measured input frame rate, updated about once per second.
+## Measured rate of frames delivered to the UI, updated about once per second.
 var fps: float = 0.0
+
+## Frames thrown away instead of displayed: stale frames on a queueing transport
+## (TCP), or incomplete frames on a lossy one (UDP).
+var frames_dropped: int = 0
+
+## Fraction of transport units lost, 0.0 .. 1.0. UDP reports lost fragments;
+## reliable transports leave this at 0.
+var loss_ratio: float = 0.0
 
 
 ## Starts (or restarts) the feed. Implementations must be safe to call again.

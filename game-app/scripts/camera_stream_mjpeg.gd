@@ -8,6 +8,10 @@ extends CameraSource
 ## response with one JPEG per part, boundary "frame". This class de-chunks the
 ## HTTP body, splits it on the boundary and decodes each part into a texture.
 ##
+## TCP is a queue, so a slow reader accumulates stale frames. Two rules keep the
+## latency bounded: only the newest frame from each read pass is decoded, and a
+## connection that goes silent for `stall_timeout_seconds` is reopened.
+##
 ## The machine running the game must be joined to the board's SoftAP, so that
 ## the board's address (192.168.4.1 by default) is reachable.
 ##
@@ -28,6 +32,9 @@ const MAX_HEADER_BYTES := 8192
 @export var path := "/stream"
 ## Reopen the stream automatically after it drops.
 @export var auto_reconnect := true
+## Reconnect if the socket goes quiet for this long while streaming; 0 disables.
+## A stalled TCP connection otherwise looks like a frozen picture indefinitely.
+@export var stall_timeout_seconds := 2.0
 
 var _tcp: StreamPeerTCP = null
 var _state := State.IDLE
@@ -42,6 +49,11 @@ var _boundary := DEFAULT_BOUNDARY
 var _boundary_token := "--frame".to_utf8_buffer()
 var _jpeg := PackedByteArray()
 var _jpeg_left := 0
+## Newest complete JPEG from the last read pass. Older ones are discarded
+## undecoded: with a live stream, a frame that is already superseded is useless,
+## and decoding the backlog is what turns a small network hiccup into seconds of
+## growing video delay.
+var _pending_jpeg := PackedByteArray()
 
 var _texture: ImageTexture = null
 var _frames := 0
@@ -49,6 +61,7 @@ var _fps_mark_ms := 0
 
 var _connect_started_ms := 0
 var _retry_at_ms := 0
+var _last_data_ms := 0
 
 var _crlf := "\r\n".to_utf8_buffer()
 var _crlfcrlf := "\r\n\r\n".to_utf8_buffer()
@@ -62,7 +75,10 @@ func start() -> void:
 	stop()
 	_reset_parser()
 	_connect_started_ms = Time.get_ticks_msec()
+	_last_data_ms = _connect_started_ms
 	_fps_mark_ms = _connect_started_ms
+	fps = 0.0
+	frames_dropped = 0
 	_state = State.CONNECTING
 	_tcp = StreamPeerTCP.new()
 	var error := _tcp.connect_to_host(host, port)
@@ -92,6 +108,8 @@ func _process(_delta: float) -> void:
 			_poll_connect()
 		State.READING:
 			_poll_read()
+			if _state == State.READING:
+				_check_stall()
 		State.RETRY:
 			if Time.get_ticks_msec() >= _retry_at_ms:
 				start()
@@ -140,8 +158,18 @@ func _poll_read() -> void:
 		if data.is_empty():
 			break
 		_raw.append_array(data)
+		_last_data_ms = Time.get_ticks_msec()
 
 	_consume()
+	_emit_latest_frame()
+
+
+func _check_stall() -> void:
+	if stall_timeout_seconds <= 0.0:
+		return
+	var silent_ms := Time.get_ticks_msec() - _last_data_ms
+	if silent_ms > int(stall_timeout_seconds * 1000.0):
+		_fail("no video for %.1f s; reconnecting" % (silent_ms / 1000.0))
 
 
 ## Removes HTTP chunk framing from _raw and feeds the payload to the multipart
@@ -249,14 +277,23 @@ func _parse_parts() -> void:
 					_jpeg_left -= take
 				if _jpeg_left > 0:
 					return
-				_emit_jpeg()
+				# Keep only the newest complete frame; a slower reader catches up
+				# instead of replaying every frame it missed.
+				if not _pending_jpeg.is_empty():
+					frames_dropped += 1
+				_pending_jpeg = _jpeg
+				_jpeg = PackedByteArray()
 				_part_state = PartState.BOUNDARY
 
 
-func _emit_jpeg() -> void:
+func _emit_latest_frame() -> void:
+	if _pending_jpeg.is_empty():
+		return
+	var jpeg := _pending_jpeg
+	_pending_jpeg = PackedByteArray()
+
 	var image := Image.new()
-	var error := image.load_jpg_from_buffer(_jpeg)
-	_jpeg = PackedByteArray()
+	var error := image.load_jpg_from_buffer(jpeg)
 	if error != OK or image.is_empty():
 		push_warning("CameraSourceMjpeg: could not decode a JPEG frame")
 		return
@@ -300,6 +337,7 @@ func _reset_parser() -> void:
 	_raw = PackedByteArray()
 	_body = PackedByteArray()
 	_jpeg = PackedByteArray()
+	_pending_jpeg = PackedByteArray()
 	_chunk_state = ChunkState.HEADERS
 	_part_state = PartState.BOUNDARY
 	_boundary = DEFAULT_BOUNDARY

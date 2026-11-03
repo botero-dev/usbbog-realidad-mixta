@@ -46,6 +46,7 @@
 #include "esp_camera.h"
 #include "imu.h"
 #include "motor_link.h"
+#include "video_udp.h"
 
 // Credentials: `secrets.h` if it exists, otherwise the throwaway defaults in
 // secrets.example.h. Copy the example to set a real SSID/password; this project
@@ -159,10 +160,13 @@ esp_err_t camera_init() {
   // in internal RAM — the frame size has to come down with it.
   config.fb_count = has_psram ? 2 : 1;
   config.fb_location = has_psram ? CAMERA_FB_IN_PSRAM : CAMERA_FB_IN_DRAM;
-  // When EMPTY rather than LATEST: with two buffers this never waits for a
-  // frame that is being written, and for a stream a slightly older frame is
-  // indistinguishable from a newer one.
-  config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
+  // LATEST, not WHEN_EMPTY. For a live feed the newest frame is the only one
+  // worth sending: when the network is slower than the camera, WHEN_EMPTY hands
+  // the sender a frame that was captured while it was busy, and that stale frame
+  // is exactly the queueing delay the UDP path exists to avoid. The driver
+  // overwrites unread buffers instead, so the next esp_camera_fb_get() returns
+  // the current frame. This also lowers /stream's latency.
+  config.grab_mode = CAMERA_GRAB_LATEST;
 
   return esp_camera_init(&config);
 }
@@ -364,6 +368,12 @@ void setup() {
                   esp_err_to_name((esp_err_t)srv), (unsigned)srv);
     return;
   }
+
+#if !BRAIN_NO_CAMERA
+  if (!video_udp::start()) {
+    Serial.println("[udp] FAILED to create the video task -- heap?");
+  }
+#endif  // !BRAIN_NO_CAMERA
 #endif  // BRAIN_NO_RADIO
 
 #if !BRAIN_NO_RADIO
@@ -378,6 +388,8 @@ void setup() {
   Serial.println("  :80     /drive     GET|POST the motors: ?th=..&fr=..&lr=.. (per-mille)");
   Serial.println("  :80     /stop      GET|POST ?mode=brake|coast|disable  (brake by default)");
   Serial.println("  :81     /stream    multipart MJPEG  <-- the video");
+  Serial.println("  :82/udp video      newest-frame JPEG fragments   <-- low latency");
+  Serial.println("                     subscribe: send \"BV1 SUB\" to :82, then keep it up");
   Serial.println();
   Serial.println("  The stream is on its own port because its handler never returns while");
   Serial.println("  a client is watching, and one httpd task serves one request at a time.");

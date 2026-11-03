@@ -146,6 +146,7 @@ otherwise is silent: everything plays at the wrong pitch and nothing reports it.
 | --- | --- |
 | `GET /` | The page: the live stream, the sound buttons and the beep-level buttons. |
 | `GET /stream` | The video — `multipart/x-mixed-replace`, one JPEG per part. **On port 81** — see below. |
+| `UDP :82` | Low-latency video: the newest JPEG as self-describing datagrams. Send `BV1 SUB` to subscribe; see below. |
 | `GET /capture` | One JPEG snapshot. |
 | `GET /status` | JSON: heap, PSRAM, stream clients, fps, `audio`, `clips[]`, sensor settings, LED. |
 | `GET\|POST /play` | `?src=beeps` or `?src=<clip>` (the names in `clips[]` of `/status`), plus an optional `&vol=0..1000` (per-mille) to set the level with it. Returns immediately; playback happens in the audio task. **404** if the clip name does not exist. |
@@ -170,6 +171,28 @@ the URL from `location.hostname`, so it follows whatever address the board is re
 > with `error in creating ctrl socket (112)` — where 112 is `EADDRINUSE` and the message
 > points at neither the port you set nor the socket you think you asked for. The fix is one
 > line: `config.ctrl_port = 32768 + port;`.
+
+### The UDP video path (port 82)
+
+`/stream` is MJPEG over TCP, and TCP is a queue: when the reader is slower than the
+camera, old frames pile up and latency grows. The UDP sender (`src/video_udp.cpp`) is
+for the game, where a stale frame is worth less than a dropped one.
+
+- A client subscribes by sending `BV1 SUB` to port 82 and repeats it about every 500 ms.
+  The sender streams only to that address and stops two seconds after the last packet.
+- Each datagram is a 20-byte header plus up to 1400 bytes of JPEG: magic `0x4256`,
+  version, type, `frame_id`, total length, fragment index/count and payload length.
+  Every fragment is self-describing, so a client can start listening mid-frame.
+- The camera runs `CAMERA_GRAB_LATEST`, so the sender gets the newest completed frame;
+  obsolete frames are overwritten by the driver instead of queued. This also lowers
+  `/stream`'s latency.
+- A lost fragment costs exactly one frame. Frames are never partially decoded; the
+  Godot client reports fps, dropped frames and fragment loss.
+- `/stream` is unchanged. Do not watch both at once: they compete for the camera's
+  framebuffers and split the frame rate.
+
+The game client (`game-app/scripts/camera_source_udp.gd`) also toggles QVGA/VGA through
+`/control?framesize=`; the button's state is read back from `/status`.
 
 The buttons use `fetch()`, not links, and that is not decoration: a plain
 `<a href="/play?...">` would **navigate away** from the page and kill the stream's socket,
