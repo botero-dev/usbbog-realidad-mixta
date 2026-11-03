@@ -1,7 +1,9 @@
 [gd_scene format=3 uid="uid://bwh12g07jhu6p"]
 
+[ext_resource type="Theme" uid="uid://cu4h6308f2afr" path="res://theme.tres" id="1_fyg84"]
 [ext_resource type="Script" uid="uid://bcbcjxi5fsvt7" path="res://scripts/main_view.gd" id="1_lc11k"]
 [ext_resource type="Texture2D" uid="uid://7bpb3rrg2jc7" path="res://icon.svg" id="2_urgos"]
+[ext_resource type="Script" uid="uid://dxkfgo7g2qb3y" path="res://scripts/hud.gd" id="4_d2dgg"]
 
 [node name="MainView" type="Control" unique_id=685966271]
 layout_mode = 3
@@ -10,9 +12,11 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
+theme = ExtResource("1_fyg84")
 script = ExtResource("1_lc11k")
 
 [node name="ConnectView" type="Control" parent="." unique_id=1079594350]
+visible = false
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -37,7 +41,6 @@ theme_override_font_sizes/font_size = 49
 text = "Connect to 192.168.4.1"
 
 [node name="ControlView" type="Control" parent="." unique_id=1541792319]
-visible = false
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -55,5 +58,71 @@ grow_vertical = 2
 texture = ExtResource("2_urgos")
 expand_mode = 1
 stretch_mode = 5
+
+[node name="HUD" type="Control" parent="ControlView" unique_id=966770740]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("4_d2dgg")
+
+[node name="ControlLights" type="HBoxContainer" parent="ControlView" unique_id=1799918168]
+layout_mode = 0
+offset_right = 144.0
+offset_bottom = 40.0
+
+[node name="Label" type="Label" parent="ControlView/ControlLights" unique_id=1828640757]
+layout_mode = 2
+text = "Lights: "
+
+[node name="ButtonLightsOff" type="Button" parent="ControlView/ControlLights" unique_id=1412194744]
+layout_mode = 2
+text = "Off"
+
+[node name="ButtonLightsOn" type="Button" parent="ControlView/ControlLights" unique_id=1859383815]
+layout_mode = 2
+text = "On"
+
+[node name="ButtonLightsTorch" type="Button" parent="ControlView/ControlLights" unique_id=1199971599]
+layout_mode = 2
+text = "Torch"
+
+[node name="ButtonLightsHazard" type="Button" parent="ControlView/ControlLights" unique_id=636534621]
+layout_mode = 2
+text = "Hazard"
+
+[node name="ControlSounds" type="HBoxContainer" parent="ControlView" unique_id=391976089]
+layout_mode = 1
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -485.0
+offset_right = 4.0
+offset_bottom = 63.0
+grow_horizontal = 0
+pivot_offset_ratio = Vector2(1, 0)
+alignment = 2
+
+[node name="Label" type="Label" parent="ControlView/ControlSounds" unique_id=1235010528]
+layout_mode = 2
+text = "Sounds:"
+
+[node name="ButtonLightsOff" type="Button" parent="ControlView/ControlSounds" unique_id=1463948677]
+layout_mode = 2
+text = "AA"
+
+[node name="ButtonLightsOn" type="Button" parent="ControlView/ControlSounds" unique_id=1455849713]
+layout_mode = 2
+text = "BB"
+
+[node name="ButtonLightsTorch" type="Button" parent="ControlView/ControlSounds" unique_id=1071749481]
+layout_mode = 2
+text = "CC"
+
+[node name="ButtonLightsHazard" type="Button" parent="ControlView/ControlSounds" unique_id=273843946]
+layout_mode = 2
+text = "DD"
 
 [connection signal="pressed" from="ConnectView/Button" to="." method="_on_button_pressed"]
