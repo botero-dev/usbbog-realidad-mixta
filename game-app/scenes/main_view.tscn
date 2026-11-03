@@ -144,37 +144,35 @@ toggle_mode = true
 button_pressed = true
 text = "Rainbow"
 
-[node name="ControlSounds" type="HBoxContainer" parent="ControlView" unique_id=391976089]
+[node name="ControlSounds" type="VBoxContainer" parent="ControlView" unique_id=391976089]
 layout_mode = 1
 anchors_preset = 1
 anchor_left = 1.0
 anchor_right = 1.0
-offset_left = -485.0
-offset_right = 4.0
+offset_left = -500.0
+offset_right = -8.0
 offset_bottom = 63.0
 grow_horizontal = 0
-pivot_offset_ratio = Vector2(1, 0)
-alignment = 2
 
 [node name="Label" type="Label" parent="ControlView/ControlSounds" unique_id=1235010528]
 layout_mode = 2
+theme_override_font_sizes/font_size = 20
 text = "Sounds:"
+horizontal_alignment = 2
 
-[node name="ButtonLightsOff" type="Button" parent="ControlView/ControlSounds" unique_id=1463948677]
+[node name="ClipButtons" type="HFlowContainer" parent="ControlView/ControlSounds" unique_id=1729394660]
 layout_mode = 2
-text = "AA"
+size_flags_horizontal = 3
+theme_override_constants/h_separation = 4
+theme_override_constants/v_separation = 4
+alignment = 2
 
-[node name="ButtonLightsOn" type="Button" parent="ControlView/ControlSounds" unique_id=1455849713]
+[node name="ClipStatus" type="Label" parent="ControlView/ControlSounds" unique_id=1900471187]
 layout_mode = 2
-text = "BB"
-
-[node name="ButtonLightsTorch" type="Button" parent="ControlView/ControlSounds" unique_id=1071749481]
-layout_mode = 2
-text = "CC"
-
-[node name="ButtonLightsHazard" type="Button" parent="ControlView/ControlSounds" unique_id=273843946]
-layout_mode = 2
-text = "DD"
+theme_override_colors/font_color = Color(0.4, 1, 0.4, 1)
+theme_override_font_sizes/font_size = 16
+horizontal_alignment = 2
+autowrap_mode = 3
 
 [node name="ResolutionButton" type="Button" parent="ControlView" unique_id=1830481991]
 layout_mode = 1
