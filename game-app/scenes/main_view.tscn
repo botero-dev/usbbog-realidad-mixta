@@ -5,6 +5,15 @@
 [ext_resource type="Texture2D" uid="uid://7bpb3rrg2jc7" path="res://icon.svg" id="2_urgos"]
 [ext_resource type="Script" uid="uid://dxkfgo7g2qb3y" path="res://scripts/hud.gd" id="4_d2dgg"]
 [ext_resource type="Script" uid="uid://vlyr6w8xpaf" path="res://scripts/camera_source_udp.gd" id="5_cam"]
+[ext_resource type="Shader" uid="uid://cluyrfsf104k7" path="res://shaders/camera_grade.gdshader" id="6_grade"]
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_grade"]
+shader = ExtResource("6_grade")
+shader_parameter/black_point = 0.15
+shader_parameter/grade_gamma = 1.02
+shader_parameter/contrast = 1.2
+shader_parameter/saturation = 0.91200004332
+shader_parameter/gain = 1.12
 
 [node name="MainView" type="Control" unique_id=685966271]
 layout_mode = 3
@@ -70,6 +79,7 @@ grow_horizontal = 2
 grow_vertical = 2
 
 [node name="Video" type="TextureRect" parent="ControlView" unique_id=1261949601]
+material = SubResource("ShaderMaterial_grade")
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0

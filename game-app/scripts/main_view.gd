@@ -16,12 +16,18 @@ var _resolution := "vga"
 var _pending_resolution := ""
 var _status_busy := false
 var _stats_elapsed := 0.0
+var _grade_material: Material
 
 
 func _ready() -> void:
 	control_view.hide()
 	connect_view.show()
 	status_label.text = ""
+
+	# The grade is for camera pixels; the placeholder icon is already designed
+	# colour, so keep it un graded until a real frame arrives.
+	_grade_material = video.material
+	video.material = null
 
 	camera.frame_received.connect(_on_frame_received)
 	camera.stream_opened.connect(_on_stream_opened)
@@ -75,6 +81,7 @@ func _on_frame_received(texture: Texture2D) -> void:
 	if _got_frame:
 		return
 	_got_frame = true
+	video.material = _grade_material
 	connect_view.hide()
 	control_view.show()
 	_stats_elapsed = 1.0  # fill the stats label on the first visible frame
@@ -82,6 +89,7 @@ func _on_frame_received(texture: Texture2D) -> void:
 
 func _on_stream_closed(reason: String) -> void:
 	_got_frame = false
+	video.material = null
 	control_view.hide()
 	connect_view.show()
 	connect_button.disabled = false
