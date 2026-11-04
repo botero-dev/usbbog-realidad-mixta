@@ -8,6 +8,11 @@ extends CameraSource
 ## "BV1 SUB" to that port and stops two seconds after the last subscribe packet,
 ## so this class repeats the packet every KEEPALIVE_MS.
 ##
+## The same socket also carries IMU samples as single datagrams of type 2 at
+## 50 Hz. They arrive on the same subscription, cost one packet each, and are
+## handed straight to `imu_received` -- an attitude sample is only ever useful
+## while it is the newest one, so there is nothing to buffer or repair.
+##
 ## Loss policy: a frame with a missing fragment is discarded, never partially
 ## decoded. `loss_ratio` is the cumulative ratio of lost fragments to expected
 ## fragments, and `frames_dropped` counts incomplete frames plus frames
@@ -16,9 +21,20 @@ extends CameraSource
 const MAGIC := 0x4256
 const VERSION := 1
 const TYPE_VIDEO := 1
+const TYPE_IMU := 2
 const HEADER_BYTES := 20
 const MAX_FRAGMENTS := 1024
 const MAX_FRAME_BYTES := 4 * 1024 * 1024
+
+## `ImuSample` as the firmware lays it out: ax, ay, az, gx, gy, gz, pitch, roll,
+## temp_c (floats), then seq and errors (uint32) -- 44 bytes, pinned there by a
+## static_assert on the sending side. Offsets are from the start of the payload.
+const IMU_BYTES := 44
+const IMU_PITCH_OFS := 24
+const IMU_ROLL_OFS := 28
+const IMU_TEMP_OFS := 32
+const IMU_SEQ_OFS := 36
+
 const SUBSCRIBE_PACKET := "BV1 SUB"
 const KEEPALIVE_MS := 500
 const INCOMPLETE_TIMEOUT_MS := 500
@@ -140,7 +156,17 @@ func _drain(now: int) -> void:
 func _handle_packet(packet: PackedByteArray, now: int) -> void:
 	if packet.decode_u16(0) != MAGIC:
 		return
-	if packet.decode_u8(2) != VERSION or packet.decode_u8(3) != TYPE_VIDEO:
+	if packet.decode_u8(2) != VERSION:
+		return
+
+	# One socket carries both kinds, so the type is the first thing to look at:
+	# a type this client does not know is skipped rather than misread as video,
+	# which is also what keeps the protocol forward-compatible.
+	var kind := packet.decode_u8(3)
+	if kind == TYPE_IMU:
+		_handle_imu(packet)
+		return
+	if kind != TYPE_VIDEO:
 		return
 
 	var frame_id := packet.decode_u32(4)
@@ -182,6 +208,25 @@ func _handle_packet(packet: PackedByteArray, now: int) -> void:
 
 	if _received == _frag_count:
 		_finish_frame()
+
+
+## One attitude sample, always a single datagram, never fragmented. A lost one
+## costs 20 ms of horizon and the next one carries the newest value, so there is
+## nothing to reassemble and no loss to account for.
+func _handle_imu(packet: PackedByteArray) -> void:
+	if packet.size() < HEADER_BYTES + IMU_BYTES:
+		return
+	if packet.decode_u16(14) != 1 or packet.decode_u16(12) != 0:
+		return
+	if packet.decode_u16(16) != IMU_BYTES:
+		return
+
+	imu_received.emit(
+		packet.decode_float(HEADER_BYTES + IMU_PITCH_OFS),
+		packet.decode_float(HEADER_BYTES + IMU_ROLL_OFS),
+		packet.decode_float(HEADER_BYTES + IMU_TEMP_OFS),
+		packet.decode_u32(HEADER_BYTES + IMU_SEQ_OFS)
+	)
 
 
 func _begin_frame(frame_id: int, frag_count: int, total_len: int, now: int) -> void:

@@ -23,6 +23,11 @@ signal stream_closed(reason: String)
 ## assign it to a TextureRect rather than keeping references to old ones.
 signal frame_received(texture: Texture2D)
 
+## Emitted for every attitude sample the link carries, in degrees. A source with
+## no telemetry (the MJPEG one) simply never emits it, so the UI connects
+## unconditionally and shows "no IMU" if the signal stays quiet.
+signal imu_received(pitch: float, roll: float, temperature: float, sequence: int)
+
 ## Measured rate of frames delivered to the UI, updated about once per second.
 var fps: float = 0.0
 

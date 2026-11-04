@@ -371,7 +371,7 @@ void setup() {
 
 #if !BRAIN_NO_CAMERA
   if (!video_udp::start()) {
-    Serial.println("[udp] FAILED to create the video task -- heap?");
+    Serial.println("[udp] FAILED to start the link (bind, mutex or task) -- see above");
   }
 #endif  // !BRAIN_NO_CAMERA
 #endif  // BRAIN_NO_RADIO
@@ -388,7 +388,7 @@ void setup() {
   Serial.println("  :80     /drive     GET|POST the motors: ?th=..&fr=..&lr=.. (per-mille)");
   Serial.println("  :80     /stop      GET|POST ?mode=brake|coast|disable  (brake by default)");
   Serial.println("  :81     /stream    multipart MJPEG  <-- the video");
-  Serial.println("  :82/udp video      newest-frame JPEG fragments   <-- low latency");
+  Serial.println("  :82/udp link      newest-frame JPEG fragments + 50 Hz IMU samples");
   Serial.println("                     subscribe: send \"BV1 SUB\" to :82, then keep it up");
   Serial.println();
   Serial.println("  The stream is on its own port because its handler never returns while");

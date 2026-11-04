@@ -102,6 +102,7 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 script = ExtResource("4_d2dgg")
+invert_pitch = true
 
 [node name="ControlLights" type="HBoxContainer" parent="ControlView" unique_id=1799918168]
 layout_mode = 0

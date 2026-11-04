@@ -159,7 +159,7 @@ otherwise is silent: everything plays at the wrong pitch and nothing reports it.
 | --- | --- |
 | `GET /` | The page: the live stream, the sound buttons and the beep-level buttons. |
 | `GET /stream` | The video — `multipart/x-mixed-replace`, one JPEG per part. **On port 81** — see below. |
-| `UDP :82` | Low-latency video: the newest JPEG as self-describing datagrams. Send `BV1 SUB` to subscribe; see below. |
+| `UDP :82` | Low-latency video (newest JPEG, self-describing datagrams) **and** 50 Hz IMU samples. Send `BV1 SUB` to subscribe; see below. |
 | `GET /capture` | One JPEG snapshot. |
 | `GET /status` | JSON: heap, PSRAM, stream clients, fps, `audio`, `clips[]`, sensor settings, LED. |
 | `GET\|POST /play` | `?src=beeps` or `?src=<clip>` (the names in `clips[]` of `/status`), plus an optional `&vol=0..1000` (per-mille) to set the level with it. Returns immediately; playback happens in the audio task. **404** if the clip name does not exist. |
@@ -185,7 +185,7 @@ the URL from `location.hostname`, so it follows whatever address the board is re
 > points at neither the port you set nor the socket you think you asked for. The fix is one
 > line: `config.ctrl_port = 32768 + port;`.
 
-### The UDP video path (port 82)
+### The UDP link (port 82)
 
 `/stream` is MJPEG over TCP, and TCP is a queue: when the reader is slower than the
 camera, old frames pile up and latency grows. The UDP sender (`src/video_udp.cpp`) is
@@ -193,9 +193,19 @@ for the game, where a stale frame is worth less than a dropped one.
 
 - A client subscribes by sending `BV1 SUB` to port 82 and repeats it about every 500 ms.
   The sender streams only to that address and stops two seconds after the last packet.
+  One subscription covers **both** payload types.
 - Each datagram is a 20-byte header plus up to 1400 bytes of JPEG: magic `0x4256`,
-  version, type, `frame_id`, total length, fragment index/count and payload length.
+  version, `type`, `frame_id`, total length, fragment index/count and payload length.
   Every fragment is self-describing, so a client can start listening mid-frame.
+- `type` 1 is a JPEG fragment. `type` 2 is an **IMU sample**: one unfragmented datagram
+  of 20 + 44 bytes at **50 Hz**, carrying the sampler's struct verbatim (`frame_id` holds
+  its `seq`). The size is pinned by a `static_assert`, because the Godot client decodes
+  fixed offsets. A sample that misses its slot is dropped, never queued — the next one
+  carries a newer value.
+- One socket serves both, so every `beginPacket`/`endPacket` from either task is
+  serialised through a mutex: `WiFiUDP` owns a single transmit buffer and is not
+  reentrant. The IMU sender is a task of its own, one priority below the video, so
+  attitude keeps flowing even while the camera stalls.
 - The camera runs `CAMERA_GRAB_LATEST`, so the sender gets the newest completed frame;
   obsolete frames are overwritten by the driver instead of queued. This also lowers
   `/stream`'s latency.
@@ -541,6 +551,13 @@ comes up reporting 0.000 g. See decision 4 at the top of `src/imu.cpp`.
 `/imu` returns the latest sample as JSON, and the page polls it at **15 Hz** for a
 live readout with accel bars. Nothing in the HTTP path ever touches the bus: the sampler
 owns it, and a handler only copies the most recent sample.
+
+The Godot client does **not** poll that endpoint: it takes the same values from the UDP
+link (`type` 2, 50 Hz, one datagram per sample — see *The UDP link* above) and puts them
+on the artificial horizon in `hud.gd`. That overlay is drawn through the lens rather than
+by eye: pitch and roll are projected with `f * tan(angle)`, where `f` comes from the
+measured **45° horizontal FOV**, so the drawn horizon lands on the real one instead of
+merely moving with it.
 
 Current reading on a still board:
 

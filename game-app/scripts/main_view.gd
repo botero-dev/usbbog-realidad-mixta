@@ -2,6 +2,7 @@ extends Control
 
 @onready var connect_view: Control = $ConnectView
 @onready var control_view: Control = $ControlView
+@onready var hud: AttitudeHud = $ControlView/HUD
 @onready var connect_button: Button = $ConnectView/Button
 @onready var status_label: Label = $ConnectView/StatusLabel
 @onready var video: TextureRect = $ControlView/Video
@@ -97,6 +98,7 @@ func _ready() -> void:
 	camera.frame_received.connect(_on_frame_received)
 	camera.stream_opened.connect(_on_stream_opened)
 	camera.stream_closed.connect(_on_stream_closed)
+	camera.imu_received.connect(_on_imu_received)
 
 	_control_http = HTTPRequest.new()
 	_control_http.timeout = 5.0
@@ -244,6 +246,9 @@ func _on_stream_closed(reason: String) -> void:
 	connect_button.disabled = false
 	connect_button.text = "Reconnect to %s" % camera.target()
 	status_label.text = reason
+	# Drop the attitude with the picture: it described a camera that is no longer
+	# being shown, and the HUD must not come back up wearing the last frame's tilt.
+	hud.clear_attitude()
 
 
 # The board owns its own configuration -- the sensor setting, the lights and the
@@ -275,6 +280,31 @@ func _on_status_completed(
 			_update_audio_label(str(parsed["audio"]))
 		if parsed.has("volume_milli"):
 			_apply_volume(int(parsed["volume_milli"]))
+
+
+# --- attitude -------------------------------------------------------------
+#
+# The HUD sits on the picture, so the horizon it draws has to match the horizon the
+# camera saw. The accelerometer-derived pitch and roll are the right source for
+# that: they are absolute and do not drift, though they get noisy while the car is
+# moving (see imu.cpp). Heading is deliberately not shown -- this sensor has no
+# magnetometer and a gyro integral would only look stable for a few seconds.
+#
+# The samples ride the video's UDP link (type 2, 50 Hz) rather than an HTTP poll:
+# the board's httpd serves one request at a time, and this UI already re-sends
+# /drive every 100 ms against a 400 ms watchdog. Ten requests a second of attitude
+# would sit in the same queue as the steering.
+
+func _on_imu_received(
+	pitch: float, roll: float, _temperature: float, _sequence: int
+) -> void:
+	# A datagram can still arrive after the feed dropped. It describes a camera that
+	# is no longer on screen, so it is dropped rather than resurrecting the overlay.
+	if not control_view.visible:
+		return
+	# The HUD expires the attitude by itself once the packets stop, so a stalled
+	# sampler cannot leave a frozen horizon behind.
+	hud.set_attitude(pitch, roll)
 
 
 func _on_resolution_pressed() -> void:
