@@ -688,8 +688,7 @@ input[type=range]{width:240px;vertical-align:middle}
 <p class="lbl">wheel test &mdash; <b>hold</b> one; releasing brakes. The mapping is
 <b>measured</b>, so each button drives the wheel it is named after: the left and right
 driver channels were crossed on this car and are corrected in firmware (2026-10-12). The
-<b>direction</b> signs have not been driven yet &mdash; wheels off the ground for the first
-real test</p>
+<b>direction</b> signs were driven and corrected too (2026-11-03)</p>
 <p>
 <button class="wh" id="wfl">fl</button>
 <button class="wh" id="wrl">rl</button>
@@ -1434,20 +1433,24 @@ esp_err_t control_handler(httpd_req_t *req) {
 //
 // Mixer inputs, all optional and defaulting to 0:
 //   th     throttle     + forward, - reverse
-//   turn   left/right   + added to the LEFT wheels, - to the right
+//   turn   left/right   + turns LEFT, - turns right -- and the sign FLIPS when th is
+//                       negative, so "+" still means left while reversing (see
+//                       mixer::mix(); this is a control convention, not physics)
 //   twist  front/rear   + added to the FRONT wheels, - to the rear
 //
-// *** THE CHANNEL MAPPING IS MEASURED; THE SIGNS ARE SETTLED BUT NOT YET DRIVEN. ***
+// *** THE CHANNEL MAPPING AND THE SIGNS ARE BOTH MEASURED ON HARDWARE. ***
 //
 // SETTLED 2026-10-12: the wheel-test buttons showed that the left and right driver
 // channels were crossed, so `mixer::to_wire()` corrects them and these names are now
 // true. That also flipped the mixer's `left_right` sign -- the two are ONE fix, and
 // test_link.cpp pins them together.
 //
-// So the ARITHMETIC and the MAPPING are both certain. What is still only REASONED is the
-// INTENT: nobody has driven the car and confirmed that `th +` is forward, that `turn +`
-// turns left, and that no motor is wired backwards. Until that is done, the thing to
-// check first is the SIGN of an input, not which wheel it moves.
+// DRIVEN AND CONFIRMED 2026-11-03: the car was driven, the directions checked, and the
+// signs adjusted wherever they disagreed with the names above. So `th +` is forward,
+// `turn +` turns left and `twist +` drives the front pair, as written -- this is no
+// longer a reasoned convention but what the car does. If a motor is ever rewired,
+// those three claims are the first thing to re-check, and mixing them up is easy to
+// do silently: the arithmetic would still be right while the car went backwards.
 //
 // EVERY request here refreshes the brain's own control watchdog. If they stop
 // arriving for 400 ms the brain commands BRAKE by itself (see motor_link.h), and

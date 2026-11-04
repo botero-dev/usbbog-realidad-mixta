@@ -6,17 +6,18 @@
 [ext_resource type="Script" uid="uid://dxkfgo7g2qb3y" path="res://scripts/hud.gd" id="4_d2dgg"]
 [ext_resource type="Script" uid="uid://vlyr6w8xpaf" path="res://scripts/camera_source_udp.gd" id="5_cam"]
 [ext_resource type="Shader" uid="uid://cluyrfsf104k7" path="res://shaders/camera_grade.gdshader" id="6_grade"]
+[ext_resource type="Script" uid="uid://bwrnurubblxl8" path="res://scripts/virtual_stick.gd" id="7_stick"]
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_grade"]
 shader = ExtResource("6_grade")
-
-[sub_resource type="ButtonGroup" id="ButtonGroup_lights"]
-allow_unpress = true
 shader_parameter/black_point = 0.15
 shader_parameter/grade_gamma = 1.02
 shader_parameter/contrast = 1.2
-shader_parameter/saturation = 0.91200004332
+shader_parameter/saturation = 1.4
 shader_parameter/gain = 1.12
+
+[sub_resource type="ButtonGroup" id="ButtonGroup_lights"]
+allow_unpress = true
 
 [node name="MainView" type="Control" unique_id=685966271]
 layout_mode = 3
@@ -120,8 +121,8 @@ text = "Off"
 [node name="ButtonBaseLow" type="Button" parent="ControlView/ControlLights" unique_id=2011000002]
 layout_mode = 2
 toggle_mode = true
-button_group = SubResource("ButtonGroup_lights")
 button_pressed = true
+button_group = SubResource("ButtonGroup_lights")
 text = "Low"
 
 [node name="ButtonBaseHigh" type="Button" parent="ControlView/ControlLights" unique_id=2011000003]
@@ -151,7 +152,7 @@ anchor_left = 1.0
 anchor_right = 1.0
 offset_left = -500.0
 offset_right = -8.0
-offset_bottom = 63.0
+offset_bottom = 240.0
 grow_horizontal = 0
 
 [node name="Label" type="Label" parent="ControlView/ControlSounds" unique_id=1235010528]
@@ -173,6 +174,43 @@ theme_override_colors/font_color = Color(0.4, 1, 0.4, 1)
 theme_override_font_sizes/font_size = 16
 horizontal_alignment = 2
 autowrap_mode = 3
+
+[node name="VolumeRow" type="HBoxContainer" parent="ControlView/ControlSounds" unique_id=1900471188]
+layout_mode = 2
+alignment = 2
+
+[node name="ButtonVolume" type="Button" parent="ControlView/ControlSounds/VolumeRow" unique_id=1900471189]
+layout_mode = 2
+theme_override_font_sizes/font_size = 18
+text = "Volume: ?"
+
+[node name="VolumePopup" type="PopupPanel" parent="ControlView" unique_id=1900471190]
+title = "Volume"
+size = Vector2i(260, 110)
+
+[node name="Margin" type="MarginContainer" parent="ControlView/VolumePopup" unique_id=1900471191]
+offset_left = 4.0
+offset_top = 4.0
+offset_right = 256.0
+offset_bottom = 106.0
+theme_override_constants/margin_left = 14
+theme_override_constants/margin_top = 10
+theme_override_constants/margin_right = 14
+theme_override_constants/margin_bottom = 10
+
+[node name="Box" type="VBoxContainer" parent="ControlView/VolumePopup/Margin" unique_id=1900471192]
+layout_mode = 2
+
+[node name="Value" type="Label" parent="ControlView/VolumePopup/Margin/Box" unique_id=1900471193]
+layout_mode = 2
+theme_override_font_sizes/font_size = 18
+text = "4%"
+horizontal_alignment = 1
+
+[node name="Slider" type="HSlider" parent="ControlView/VolumePopup/Margin/Box" unique_id=1900471194]
+custom_minimum_size = Vector2(220, 0)
+layout_mode = 2
+max_value = 20.0
 
 [node name="ResolutionButton" type="Button" parent="ControlView" unique_id=1830481991]
 layout_mode = 1
@@ -202,5 +240,35 @@ grow_vertical = 0
 theme_override_colors/font_color = Color(0.4, 1, 0.4, 1)
 theme_override_font_sizes/font_size = 20
 horizontal_alignment = 1
+
+[node name="ThrottleStick" type="Control" parent="ControlView" unique_id=1696020143]
+layout_mode = 1
+anchors_preset = 2
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 16.0
+offset_top = -560.0
+offset_right = 256.0
+offset_bottom = -72.0
+grow_vertical = 0
+script = ExtResource("7_stick")
+label_text = "THROTTLE"
+
+[node name="SteerStick" type="Control" parent="ControlView" unique_id=1696020144]
+layout_mode = 1
+anchors_preset = 3
+anchor_left = 1.0
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = -436.0
+offset_top = -272.0
+offset_right = -16.0
+offset_bottom = -72.0
+grow_horizontal = 0
+grow_vertical = 0
+script = ExtResource("7_stick")
+axis = Vector2(1, 0)
+label_text = "STEER"
 
 [connection signal="pressed" from="ConnectView/Button" to="." method="_on_button_pressed"]

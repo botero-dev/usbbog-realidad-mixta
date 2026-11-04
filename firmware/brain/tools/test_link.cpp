@@ -309,6 +309,43 @@ static void test_mixer() {
   mixer::to_wire(b);
   for (uint8_t i = 0; i < proto::MOTOR_COUNT; ++i) CHECK(b[i] == a[i]);
 
+  // *** STEERING INVERTS WHEN REVERSING, ADDED 2026-11-03. ***
+  // The same +left_right that turns the car left going forward must turn it left going
+  // BACKWARD too, so the sign is flipped when throttle < 0. Pinned here because it is
+  // invisible in a bench test and obvious (wrong) the first time someone reverses.
+  //
+  // th = -800, left_right = +200 -> the turn term becomes -200, so the RIGHT wheels
+  // reverse hardest (-1000) and the nose swings LEFT. Compare the forward case above,
+  // where +200 made the right wheels fastest forward (-200 on the left): same
+  // differential, opposite sign -- which is exactly the inversion.
+  in.throttle = -800;
+  in.front_rear = 0;
+  in.left_right = 200;
+  mixer::mix(in, d);
+  CHECK(d[proto::MOT_FL] == -600);   // -800 - (-200)
+  CHECK(d[proto::MOT_RL] == -600);
+  CHECK(d[proto::MOT_RR] == -1000);  // -800 + (-200)
+  CHECK(d[proto::MOT_FR] == -1000);
+
+  // ...and it is the SAME differential as forward-plus-left, shifted by the throttle:
+  // the sign of the turn term, not its magnitude, is what changed.
+  in.throttle = 0;
+  in.left_right = 200;
+  mixer::mix(in, d);
+  CHECK(d[proto::MOT_FL] == -200);
+  CHECK(d[proto::MOT_RR] == 200);
+
+  // Zero throttle is NOT reversed -- a pivot in place keeps the plain convention.
+  // (Covered by the check just above: at th = 0 the duties are the forward ones.)
+
+  // A negative input's negation must not overflow: -(-32768) does not fit in int16_t,
+  // so the negation is done in int32_t and then clamped.
+  in.throttle = -1;
+  in.left_right = -32768;
+  mixer::mix(in, d);
+  CHECK(d[proto::MOT_FL] == -proto::DUTY_MAX);  // -1 - (+32768) -> clamped
+  CHECK(d[proto::MOT_RR] == proto::DUTY_MAX);   // -1 + (+32768) -> clamped
+
   // The wide intermediate, in a case where it changes the ANSWER rather than just
   // the code: fr (the +left_right term) is now on the FRONT RIGHT, so it is MOT_FR that
   // sums to 3 x 20000 = 60000 and would wrap to -5536 in a 16-bit sum -- a full-scale

@@ -9,11 +9,17 @@ extends Control
 @onready var stats_label: Label = $ControlView/StatsLabel
 @onready var clip_buttons: HFlowContainer = $ControlView/ControlSounds/ClipButtons
 @onready var clip_status: Label = $ControlView/ControlSounds/ClipStatus
+@onready var volume_button: Button = $ControlView/ControlSounds/VolumeRow/ButtonVolume
+@onready var volume_popup: PopupPanel = $ControlView/VolumePopup
+@onready var volume_slider: HSlider = $ControlView/VolumePopup/Margin/Box/Slider
+@onready var volume_value: Label = $ControlView/VolumePopup/Margin/Box/Value
 @onready var base_off: Button = $ControlView/ControlLights/ButtonBaseOff
 @onready var base_low: Button = $ControlView/ControlLights/ButtonBaseLow
 @onready var base_high: Button = $ControlView/ControlLights/ButtonBaseHigh
 @onready var hazard_button: Button = $ControlView/ControlLights/ButtonHazard
 @onready var rainbow_button: Button = $ControlView/ControlLights/ButtonRainbow
+@onready var throttle_stick: VirtualStick = $ControlView/ThrottleStick
+@onready var steer_stick: VirtualStick = $ControlView/SteerStick
 @onready var camera: CameraSource = $CameraFeed
 
 var _got_frame := false
@@ -37,12 +43,39 @@ var _applying_led_state := false
 var _clip_names: Array[String] = []
 var _play_busy := false
 var _play_pending := ""
+var _volume_http: HTTPRequest
+var _volume_timer: Timer
+# The board's level in per-mille. It is STICKY on the board, so this mirrors what the
+# firmware reports rather than what was last asked for.
+var _volume_milli := -1
+var _volume_busy := false
+var _volume_pending := -1
+var _volume_dragging := false
 var _polling_audio := false
 var _poll_busy := false
 var _poll_elapsed := 0.0
 var _poll_deadline_ms := 0
 var _poll_request_ms := 0
 var _last_play_ms := 0
+var _drive_http: HTTPRequest
+# Normalized commands, each kept separately: the two sticks are independent, and one
+# being released must not wipe the other's input. +1 throttle is forward, +1 steer is
+# right -- both in the screen/stick convention, converted in drive_url().
+var _throttle := 0.0
+var _steer := 0.0
+var _driving := false
+var _drive_busy := false
+var _drive_stop_pending := false
+var _drive_next_ms := 0
+
+## Full deflection in per-mille of the mixer. The board's own page scales its whole
+## range from a slider; this is the equivalent ceiling, and it is deliberately well
+## under 1000 because the car reaches full speed long before the stick does.
+@export var max_drive_permille := 600
+## How often a held stick is re-sent. Must stay well inside the brain's 400 ms
+## control watchdog (see motor_link.h), which brakes the car by itself if commands
+## stop arriving -- that is the safety net, not the normal stop path.
+@export var drive_interval_ms := 100
 
 ## `src=beeps` is the firmware's test tone. It is not in `clips[]` -- it is not an
 ## embedded clip -- but /play accepts it always, so it gets a button too.
@@ -90,6 +123,36 @@ func _ready() -> void:
 	_poll_http.request_completed.connect(_on_poll_completed)
 	add_child(_poll_http)
 
+	_drive_http = HTTPRequest.new()
+	_drive_http.timeout = 3.0
+	_drive_http.request_completed.connect(_on_drive_completed)
+	add_child(_drive_http)
+
+	_volume_http = HTTPRequest.new()
+	_volume_http.timeout = 5.0
+	_volume_http.request_completed.connect(_on_volume_completed)
+	add_child(_volume_http)
+
+	# Dragging a slider emits a change per pixel, and one HTTP request per pixel would
+	# swamp a link that already takes ~150 ms round trip. The timer collapses a drag
+	# into a handful of requests, and the release sends the final value immediately.
+	_volume_timer = Timer.new()
+	_volume_timer.one_shot = true
+	_volume_timer.wait_time = 0.15
+	_volume_timer.timeout.connect(_send_volume)
+	add_child(_volume_timer)
+
+	volume_button.pressed.connect(_on_volume_button_pressed)
+	volume_slider.value_changed.connect(_on_volume_changed)
+	volume_slider.drag_started.connect(_on_volume_drag_started)
+	volume_slider.drag_ended.connect(_on_volume_drag_ended)
+	_update_volume_button()
+
+	throttle_stick.changed.connect(_on_throttle_changed)
+	throttle_stick.released.connect(_on_throttle_changed.bind(Vector2.ZERO))
+	steer_stick.changed.connect(_on_steer_changed)
+	steer_stick.released.connect(_on_steer_changed.bind(Vector2.ZERO))
+
 	resolution_button.pressed.connect(_on_resolution_pressed)
 	_set_resolution(_resolution)
 
@@ -133,6 +196,13 @@ func _process(delta: float) -> void:
 				_poll_busy = false
 				_polling_audio = false
 
+	# While a stick is off-centre the command is re-asserted on a fixed cadence: the
+	# brain brakes after 400 ms without one, so a single press-and-hold would otherwise
+	# stop the car a fifth of a second later. Releasing both hands brakes at once (see
+	# _update_drive_state), so this is the "still holding" path, not the stop path.
+	if _driving and not _drive_busy and Time.get_ticks_msec() >= _drive_next_ms:
+		_send_drive()
+
 
 func _on_button_pressed() -> void:
 	_got_frame = false
@@ -165,6 +235,10 @@ func _on_stream_closed(reason: String) -> void:
 	video.material = null
 	_polling_audio = false
 	clip_status.text = ""
+	volume_popup.hide()
+	# Stop before hiding: a car whose video dropped must not keep driving on the
+	# last command, and the stick would otherwise look released while still held.
+	_release_stick()
 	control_view.hide()
 	connect_view.show()
 	connect_button.disabled = false
@@ -199,6 +273,8 @@ func _on_status_completed(
 			_populate_clips(parsed["clips"])
 		if parsed.has("audio"):
 			_update_audio_label(str(parsed["audio"]))
+		if parsed.has("volume_milli"):
+			_apply_volume(int(parsed["volume_milli"]))
 
 
 func _on_resolution_pressed() -> void:
@@ -451,3 +527,223 @@ func _on_poll_completed(
 	var parsed: Variant = JSON.parse_string(body.get_string_from_utf8())
 	if parsed is Dictionary and parsed.has("audio"):
 		_update_audio_label(str(parsed["audio"]))
+
+
+# --- driving --------------------------------------------------------------
+#
+# Two sticks, because a car has two independent inputs: the LEFT one is throttle
+# (vertical only) and the RIGHT one is steering (horizontal only). They are separate
+# so both can be held at once -- a single stick cannot express "half throttle, gently
+# left" without giving up full authority on one axis in exchange for the other.
+#
+# They map to the board's mixer, not to four raw duties: `th` is forward and `turn` is
+# steering, and the board does the mixing (see /drive in app_httpd.cpp).
+#
+# The steer sign is inverted because the two conventions disagree: the stick reports
+# +right (screen coordinates), while `turn` is +left. Throttle is inverted for the
+# same kind of reason -- down is positive on screen, forward is negative.
+#
+# Stopping is EXPLICIT. The brain's watchdog would brake on its own 400 ms after the
+# commands stop, but a quarter second of coasting on every release is not what "stop"
+# means, so letting go of BOTH sticks sends /stop (brake) at once. Letting go of one
+# while the other is held keeps driving, on the axis still held.
+
+func _on_throttle_changed(value: Vector2) -> void:
+	# The stick reports +down, which is +down on screen and reverse on the car.
+	_throttle = -value.y
+	_update_drive_state()
+
+
+func _on_steer_changed(value: Vector2) -> void:
+	_steer = value.x
+	_update_drive_state()
+
+
+func _update_drive_state() -> void:
+	if is_zero_approx(_throttle) and is_zero_approx(_steer):
+		_throttle = 0.0
+		_steer = 0.0
+		_stop_driving()
+		return
+	# Send the first command immediately instead of waiting for the next tick, so a
+	# fresh touch does not feel laggy.
+	if not _driving:
+		_driving = true
+		_drive_next_ms = 0
+
+
+func _send_drive() -> void:
+	_drive_next_ms = Time.get_ticks_msec() + drive_interval_ms
+
+	_drive_busy = true
+	var error := _drive_http.request(
+		drive_url(_steer, _throttle), [], HTTPClient.METHOD_POST
+	)
+	if error != OK:
+		# Do not retry in a loop: if the request cannot even be started, the link is
+		# gone and the board's watchdog is already doing the right thing.
+		_drive_busy = false
+		_driving = false
+		push_warning("could not send /drive (error %d)" % error)
+
+
+## The mixer command for a pair of stick positions. Split out from the request so the
+## sign conventions can be checked without a car attached -- they are the one thing
+## here that is easy to get backwards and hard to notice until the car drives away.
+##
+## `steer` is +right and `throttle` is +forward, both normalized. The firmware's
+## `turn` is +LEFT, hence the inversion on steer alone.
+func drive_url(steer: float, throttle: float) -> String:
+	var th := int(roundf(clampf(throttle, -1.0, 1.0) * max_drive_permille))
+	var turn := int(roundf(clampf(-steer, -1.0, 1.0) * max_drive_permille))
+	return "http://%s/drive?th=%d&turn=%d&twist=0" % [
+		camera.target(), th, turn
+	]
+
+
+func _stop_driving() -> void:
+	if not _driving:
+		return
+	_driving = false
+	if _drive_busy:
+		# One request in flight; the brake is sent from its completion handler.
+		_drive_stop_pending = true
+		return
+	_send_stop()
+
+
+func _send_stop() -> void:
+	_drive_busy = true
+	var error := _drive_http.request(
+		"http://%s/stop" % camera.target(), [], HTTPClient.METHOD_POST
+	)
+	if error != OK:
+		_drive_busy = false
+		push_warning("could not send /stop (error %d)" % error)
+
+
+func _on_drive_completed(
+	result: int, response_code: int, _headers: PackedStringArray, _body: PackedByteArray
+) -> void:
+	_drive_busy = false
+
+	if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
+		push_warning("drive command failed: HTTP %d (result %d)" % [response_code, result])
+
+	if _drive_stop_pending:
+		_drive_stop_pending = false
+		_send_stop()
+
+
+## Returns both sticks to rest and brakes. Called when the view goes away, so a dropped
+## stream can never leave a stick looking held.
+func _release_stick() -> void:
+	throttle_stick.reset()
+	steer_stick.reset()
+	_throttle = 0.0
+	_steer = 0.0
+	_stop_driving()
+
+
+# If the window loses focus mid-drag, the release event may never arrive -- and on a
+# real car "the mouse left the window" must not mean "keep driving".
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_APPLICATION_FOCUS_OUT or what == NOTIFICATION_WM_WINDOW_FOCUS_OUT:
+		_release_stick()
+
+
+# --- volume ---------------------------------------------------------------
+#
+# The level is the ONLY volume control this car has: the DAC is fixed line level and
+# the amp has fixed gain, so the firmware scales the samples (see kDefaultVolume in
+# audio_player.cpp). Its boot default is deliberately quiet -- 3.7%, about -29 dBFS --
+# which is why "the car makes no sound" usually means "raise the volume", not "audio
+# is broken". The value is STICKY on the board and survives until it is reset, so this
+# mirrors what /status reports rather than assuming the boot default.
+
+func _on_volume_button_pressed() -> void:
+	var button_rect := volume_button.get_global_rect()
+	var popup_size := volume_popup.get_contents_minimum_size()
+	# Under the button, right-aligned to it, so it never covers the sounds it controls.
+	var position := Vector2(
+		button_rect.position.x + button_rect.size.x - popup_size.x,
+		button_rect.position.y + button_rect.size.y + 4.0
+	)
+	volume_popup.popup(Rect2i(Vector2i(position), Vector2i(popup_size)))
+
+
+func _on_volume_changed(value: float) -> void:
+	volume_value.text = _format_volume(int(round(value * 10.0)))
+	_volume_timer.start()
+
+
+func _on_volume_drag_ended(value_changed: bool) -> void:
+	_volume_dragging = false
+	if value_changed:
+		_volume_timer.stop()
+		_send_volume()
+
+
+func _send_volume() -> void:
+	var milli := int(round(volume_slider.value * 10.0))
+	# Requests never overlap; the newest value is sent when the board answers. That
+	# keeps a drag from queueing a dozen requests the board has to work through.
+	if _volume_busy:
+		_volume_pending = milli
+		return
+	_volume_busy = true
+	var error := _volume_http.request(
+		"http://%s/control?vol=%d" % [camera.target(), milli],
+		[],
+		HTTPClient.METHOD_POST
+	)
+	if error != OK:
+		_volume_busy = false
+		push_warning("could not send volume (error %d)" % error)
+
+
+func _on_volume_completed(
+	result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray
+) -> void:
+	_volume_busy = false
+
+	if result == HTTPRequest.RESULT_SUCCESS and response_code == 200:
+		var parsed: Variant = JSON.parse_string(body.get_string_from_utf8())
+		# The reply is the same JSON as /status, so the level the board actually applied
+		# comes back with it -- including when it clamped what was asked for.
+		if parsed is Dictionary and parsed.has("volume_milli"):
+			_apply_volume(int(parsed["volume_milli"]))
+	else:
+		push_warning("volume change failed: HTTP %d" % response_code)
+
+	if _volume_pending >= 0:
+		var next := _volume_pending
+		_volume_pending = -1
+		volume_slider.set_value_no_signal(float(next) / 10.0)
+		_send_volume()
+
+
+## Adopts a level reported by the board. Does not move the slider while the user is
+## dragging it, or a reply would fight the finger.
+func _apply_volume(milli: int) -> void:
+	_volume_milli = clampi(milli, 0, 1000)
+	if not _volume_dragging:
+		volume_slider.set_value_no_signal(float(_volume_milli) / 10.0)
+	volume_value.text = _format_volume(_volume_milli)
+	_update_volume_button()
+
+
+func _on_volume_drag_started() -> void:
+	_volume_dragging = true
+
+
+func _update_volume_button() -> void:
+	volume_button.text = (
+		"Volume: ?" if _volume_milli < 0 else "Volume: " + _format_volume(_volume_milli)
+	)
+
+
+## Per-mille to a short percentage: the difference between 3.7% and 4% does not matter
+## to a person, and "4%" is what they will compare against the slider.
+func _format_volume(milli: int) -> String:
+	return "%d%%" % int(round(float(milli) / 10.0))

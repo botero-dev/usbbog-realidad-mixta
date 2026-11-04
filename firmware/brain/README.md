@@ -86,6 +86,19 @@ So the HTTP side records the level and the audio task applies it just before the
 sound. `/status` reports it as `volume_milli`, and `/control?vol=N` sets it without
 playing anything.
 
+> ⚠️ **The boot default is quiet on purpose: 3.7 %, about -29 dBFS** (`kDefaultVolume` in
+> audio_player.cpp is a tenth of a value that was "far too loud" into this speaker). So
+> *"the car makes no sound"* usually means **the level**, not a broken audio path — and
+> that is cheap to check: `/play?src=beeps` answering with `audio: "beeps"` in `/status`
+> a few hundred ms later proves the whole chain up to the DAC ran. If it does play and
+> you hear nothing, raise `vol` first; only then start on the XSMT strap and the amp
+> (see *When it is silent* below). The level is **sticky** until reset, so a quiet value
+> left behind by an earlier session is a real candidate too.
+>
+> The page's level buttons cover 1–20 % only. The game app's **Volume** button opens a
+> slider over the board's whole range (0–100 %, i.e. `vol=0..1000`), which is the quickest
+> way to tell "too quiet" from "not working".
+
 Two reasons for no autoplay. A board that makes noise the moment it powers up is a board
 you cannot debug — *"is the amp hissing?"* is unanswerable while the firmware is also
 beeping. And on a car, sound should be a decision rather than a side effect of booting.
@@ -461,11 +474,24 @@ channel — and note which wheel moves.
 > Before it, the two errors cancelled: the mixer's sign rotated the car the opposite way from
 > what its own comment claimed, and the crossed channels cancelled that out — so the arrows
 > happened to be **right** while every channel name was **wrong**. Fix either half alone and
-> the car steers backwards. `test_link.cpp` pins the pairing down (330 checks).
+> the car steers backwards. `test_link.cpp` pins the pairing down (338 checks).
 >
-> Still to be *driven* rather than reasoned about: the convention is now `?turn=+` turns the
-> car **left**, which is what the page's left arrow sends. **Wheels off the ground for the
-> first press.**
+> ✅ **DRIVEN 2026-11-03.** The car was driven, the directions checked, and the signs
+> adjusted where they disagreed with the names. So `?turn=+` turns the car **left** and
+> `?th=+` drives it **forward**, as the page's own arrows send — no longer a reasoned
+> convention but what the car does. Re-check those two the moment a motor is rewired.
+>
+> **Steering also inverts when reversing (added 2026-11-03).** With `th` negative the
+> mixer flips the turn term, so `?turn=+` still turns the car **left as you see it** while
+> backing up. That is a **control convention, not physics**: a real car reversing with its
+> wheels turned left swings its nose right, which is what this firmware did before. It
+> lives in `mixer::mix()` rather than in a client so the page and the game cannot drift
+> apart, and exactly zero throttle is not treated as reverse — a pivot in place keeps the
+> plain sign.
+
+The four-duty form `?fl=..&rl=..&rr=..&fr=` bypasses the mixer entirely, and therefore
+bypasses the reverse inversion too. That is deliberate: it is a diagnostic, and it must
+drive exactly the channel it names.
 
 The `/status` JSON carries the link state under `link_*` and `pico.*` (`seen`, `status`,
 `fault`, `age_ms`), so "is the Pico talking, and how long ago?" is answerable from a
@@ -479,13 +505,15 @@ g++ -std=gnu++11 -Wall -Wextra -I include -I ../pico_body/include tools/test_lin
 /tmp/test_link
 ```
 
-**330 checks.** The CRC against an independently written loop implementation over every
+**338 checks.** The CRC against an independently written loop implementation over every
 length from 0 to 64; frame and reply round-trips over all five message types; **every
 single-bit corruption** in both formats rejected (a corrupt frame that is *obeyed* is the
 failure the whole design exists to prevent); the sync hunt fed a frame buried in bytes that
 contain the sync pattern; the mixer, including a case where the 32-bit intermediate changes
-the answer; and — added 2026-10-12 — **the turn convention together with `to_wire()`**, which
-are one fix that either half of would undo.
+the answer; — added 2026-10-12 — **the turn convention together with `to_wire()`**, which
+are one fix that either half of would undo; and — added 2026-11-03 — **the reverse
+inversion**, including that zero throttle does *not* invert and that negating an `int16_t`
+minimum clamps instead of overflowing.
 
 `-std=gnu++11` is deliberate — that is what this core builds with, so the test doubles as
 proof that `protocol.h` has not drifted into C++14. It **had**: the CRC used loops inside

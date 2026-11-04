@@ -16,11 +16,10 @@
 //   left_right  +  left wheels,    -  right wheels    (the turn)
 //
 // Motor order is fl, rl, rr, fr -- proto::MotorId, and the frame's order. The
-// SIGNS are only meaningful once the channel-to-wheel mapping is confirmed on
-// hardware (bring-up steps 4/5 in section 11): until then a swapped pair or a
-// reversed motor makes every sign here a coin flip. The arithmetic below is the
-// one thing that is certain, because it is the same arithmetic that already ran
-// on the original car.
+// channel-to-wheel mapping was measured on 2026-10-12 and the resulting SIGNS were
+// then driven and corrected on 2026-11-03, so the conventions above are now what the
+// car actually does rather than a reasoned guess. The arithmetic below is the same
+// arithmetic that already ran on the original car.
 // ---------------------------------------------------------------------------
 #pragma once
 
@@ -59,10 +58,30 @@ inline int16_t clamp_duty(int32_t v) {
 // It HAD to flip, because of to_wire() below: the two are ONE fix, and either one alone
 // inverts the car's steering. Before them the two errors cancelled -- the arrows happened
 // to be right while the wheel names were wrong.
+//
+// *** STEERING INVERTS WHEN REVERSING (added 2026-11-03). ***
+//
+// With `throttle < 0` the turn sign is flipped, so `left_right +` always rotates the car
+// to the LEFT as the player sees it, whichever way it is travelling -- the convention
+// games use for a reversing vehicle, and the one that stops "reverse and steer" from
+// feeling like the controls turned inside out. Note this is NOT how a real car behaves:
+// reversing with the wheels turned left swings the NOSE right, which is what this file
+// did before. It is a control convention, not physics, and it lives here rather than in
+// a client because both the page and the game drive through this mixer.
+//
+// Exactly zero throttle is NOT reversed: a pivot in place keeps its plain sign, so
+// spinning on the spot still answers to the same stick direction in both gears.
+//
+// Because this sits in mix(), it applies to the whole mixer -- the brake/coast modes have
+// no steering at all, and the raw four-duty form (`?fl=..&rl=..`) bypasses this entirely
+// by design, since it is a diagnostic that must drive exactly the wheel it names.
 inline void mix(const Input& in, int16_t duty[proto::MOTOR_COUNT]) {
   const int32_t th = in.throttle;
   const int32_t fr = in.front_rear;
-  const int32_t lr = in.left_right;
+  // Widened before negating: `-(-32768)` does not fit in int16_t, and in.left_right is
+  // not clamped here (that happens in motor_link), so the raw value has to be safe.
+  const int32_t lr =
+      (th < 0) ? -static_cast<int32_t>(in.left_right) : in.left_right;
 
   duty[proto::MOT_FL] = clamp_duty(th + fr - lr);  // front left
   duty[proto::MOT_RL] = clamp_duty(th - fr - lr);  // rear left
