@@ -660,7 +660,7 @@ pio run -d firmware/brain -t monitor      # serial console (UART0)
 ```
 
 The board boots **silent** — no autoplay, and the audio stays quiet until a button is
-pressed. Join the AP (`brain` / `brainpass`, or whatever `secrets.h` says) and open
+pressed. Join the AP (`KAIROS 95` / `carro123`, or whatever `secrets.h` says) and open
 `http://192.168.4.1/`. The lights come on with the board: head white, tail red, floor
 sweeping (see *The layout* above).
 
