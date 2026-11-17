@@ -184,6 +184,30 @@ bloquearía `/play`, `/status` y `/control` durante el video.
   gamma, contraste y saturación), sin coste de ancho de banda.
 - Al soltar ambos sticks, o al perder el video, envía `/stop` de inmediato.
 
+`export_presets.cfg` define cuatro presets de exportación, todos con salida dentro
+de `game-app/builds/`:
+
+| Preset | Plataforma | Artefacto |
+| --- | --- | --- |
+| `Windows Desktop` | Windows x86_64 | `builds/windows/GameApp.exe` |
+| `macOS` | macOS universal (arm64 + x86_64) | `builds/macos/GameApp.zip` |
+| `Linux` | Linux x86_64 | `builds/linux/GameApp.x86_64` |
+| `Android` | Android arm64-v8a | `builds/android/GameApp.apk` |
+
+Las compilaciones de prueba se generan por consola desde `game-app/`:
+
+```bash
+godot --headless --path . --export-debug "Windows Desktop"
+godot --headless --path . --export-debug "macOS"
+godot --headless --path . --export-debug "Linux"
+godot --headless --path . --export-debug "Android"
+```
+
+Android usa el *debug keystore* de Godot y la plantilla precompilada (sin Gradle),
+y declara los permisos `INTERNET` y `ACCESS_NETWORK_STATE` que necesita para hablar
+con el coche. macOS sale sin firma ni notarización: se abre con clic derecho →
+*Abrir*. `builds/` no se versiona.
+
 ## Hardware
 
 | Elemento | Función |
@@ -275,7 +299,7 @@ La primera grabación del Pico requiere mantener **BOOTSEL** (o arrastrar
    a `secrets.h` y editando ahí SSID y contraseña).
 2. Abrir `http://192.168.4.1/`.
 3. Para la app: abrir `game-app/project.godot` con Godot 4.7 y ejecutar la escena
-   principal.
+   principal, o lanzar un binario ya compilado de `game-app/builds/`.
 
 ### Pruebas sin hardware
 
