@@ -65,18 +65,18 @@
 \maketitle
 
 \begin{abstract}
-Se presenta el diseño y la implementación de un vehículo a control remoto inspirado en el personaje Rayo McQueen, construido sobre un chasis de tracción a las cuatro ruedas (4WD) con cuatro motorreductores DC y dos controladores de puente H TB6612FNG. El trabajo se centra en integrar componentes electrónicos y multimedia en el vehículo y en conectarlo con un motor de juegos. El control se reparte entre dos microcontroladores: un ESP32-S3 que actúa como cerebro (red Wi-Fi, cámara, audio, sensor de movimiento y control del vehículo) y un RP2040 que actúa como cuerpo (generación de las señales PWM y de dirección, con un vigilante de comunicación). Se describe la alimentación de los módulos, el protocolo de comunicación entre ambas placas y la interfaz de usuario basada en HTTP, y se valida cada subsistema con pruebas experimentales, contrastadas con un análisis cuantitativo de las magnitudes mecánicas y eléctricas. La integración de los sensores y de los elementos multimedia se completó y verificó; la conexión con el motor de juegos quedó en un cliente preliminar y se deja como trabajo futuro.
+Se presenta el diseño y la implementación de un vehículo a control remoto inspirado en el personaje Rayo McQueen, construido sobre un chasis de tracción a las cuatro ruedas (4WD) con cuatro motorreductores DC y dos controladores de puente H TB6612FNG. El trabajo se centra en integrar componentes electrónicos y multimedia en el vehículo y en conectarlo con un motor de juegos. El control se reparte entre dos microcontroladores: un ESP32-S3 que actúa como cerebro (red Wi-Fi, cámara, audio, sensor de movimiento y control del vehículo) y un RP2040 que actúa como cuerpo (generación de las señales PWM y de dirección, con un vigilante de comunicación). Se describe la alimentación de los módulos, el protocolo de comunicación entre ambas placas y las dos interfaces de usuario: una página web que sirve el propio vehículo y una aplicación de escritorio y móvil desarrollada en el motor de juegos Godot, que recibe el video y la actitud en tiempo real por UDP y gobierna los motores, las luces y el audio por HTTP. Se valida cada subsistema con pruebas experimentales y con pruebas automáticas del enlace, contrastadas con un análisis cuantitativo de las magnitudes mecánicas y eléctricas. La integración de los sensores, de los elementos multimedia y de la aplicación de control se completó y verificó sobre el prototipo.
 \end{abstract}
 
 % Traducción del resumen al inglés (abstract)
 \renewcommand{\abstractname}{Abstract}
 \begin{abstract}
-This work presents the design and implementation of a radio-controlled vehicle inspired by the character Lightning McQueen, built on a four-wheel-drive (4WD) chassis with four DC gearmotors and two TB6612FNG H-bridge drivers. The project focuses on integrating electronic and multimedia components into the vehicle and on connecting it to a game engine. Control is split between two microcontrollers: an ESP32-S3 acting as the brain (Wi-Fi network, camera, audio, motion sensor and vehicle control) and an RP2040 acting as the body (generation of the PWM and direction signals, with a communication watchdog). The document describes the power supply of the modules, the communication protocol between both boards and the HTTP-based user interface, and validates every subsystem experimentally, contrasted with a quantitative analysis of the mechanical and electrical magnitudes. The integration of the sensors and multimedia elements was completed and verified; the game-engine link reached a preliminary client and is left as future work.
+This work presents the design and implementation of a radio-controlled vehicle inspired by the character Lightning McQueen, built on a four-wheel-drive (4WD) chassis with four DC gearmotors and two TB6612FNG H-bridge drivers. The project focuses on integrating electronic and multimedia components into the vehicle and on connecting it to a game engine. Control is split between two microcontrollers: an ESP32-S3 acting as the brain (Wi-Fi network, camera, audio, motion sensor and vehicle control) and an RP2040 acting as the body (generation of the PWM and direction signals, with a communication watchdog). The document describes the power supply of the modules, the communication protocol between both boards and the two user interfaces: a web page served by the vehicle itself and a desktop and mobile application built on the Godot game engine, which receives video and attitude in real time over UDP and commands the motors, lights and audio over HTTP. Every subsystem is validated experimentally and with automated tests of the link, contrasted with a quantitative analysis of the mechanical and electrical magnitudes. The integration of the sensors, the multimedia elements and the control application was completed and verified on the prototype.
 \end{abstract}
 
 % Note that keywords are not normally used for peerreview papers.
 \begin{IEEEkeywords}
-Vehículo RC, ESP32-S3, RP2040, Wi-Fi, HTTP, Cámara, Unidad de medición inercial, PWM, Puente H, Motor de juegos (Godot).
+Vehículo RC, ESP32-S3, RP2040, Wi-Fi, HTTP, UDP, Cámara, Unidad de medición inercial, PWM, Puente H, Motor de juegos (Godot).
 \end{IEEEkeywords}
 
 
@@ -97,7 +97,7 @@ Desarrollar un vehículo a control remoto que integre componentes electrónicos 
     \item Construir un prototipo funcional con tracción a las cuatro ruedas, gobernable desde una interfaz de red.
     \item Integrar los sensores y los elementos multimedia del vehículo: cámara con video en vivo, salida de audio y sensor de movimiento de seis ejes.
     \item Implementar el firmware de los dos microcontroladores y la comunicación entre ellos, incluyendo una condición de seguridad ante la pérdida de comunicación.
-    \item Conectar el vehículo con un motor de juegos (Godot), usando su interfaz HTTP para controlarlo y visualizar sus datos.
+    \item Desarrollar una aplicación de control en el motor de juegos (Godot) que reciba el video y la orientación del vehículo por UDP y que gobierne por HTTP los motores, las luces y el audio, con compilaciones para escritorio y móvil.
     \item Validar experimentalmente la alimentación, el control de los motores y los subsistemas de entrada y salida, y contrastar los resultados con el análisis cuantitativo de las magnitudes mecánicas y eléctricas.
 \end{itemize}
 
@@ -184,9 +184,9 @@ Las redes funcionan por capas, y TCP/IP es el conjunto de protocolos que hace po
 
 Para la transmisión en tiempo real, UDP tiene una ventaja clara. Al no esperar confirmaciones ni reenviar lo perdido, mantiene el retardo bajo y constante; TCP, en cambio, puede frenar todo lo que viene detrás de un paquete perdido hasta que lo recupera, así que la imagen se congela un momento. En video o en datos en vivo esto importa mucho: un cuadro que llega tarde ya pierde su utilidad, así que lo práctico es descartarlo y dejar paso al siguiente.
 
-En este proyecto, sin embargo, se optó por TCP por comodidad: HTTP ---el protocolo que se usa para la página y los comandos--- funciona sobre TCP, lo que permite emplear un servidor web estándar y un cliente tan simple como un navegador, a cambio de un retardo algo mayor. UDP queda como una mejora natural si más adelante se quiere reducir el retardo del video. Como opción a futuro, \textbf{WebRTC} (\emph{Web Real-Time Communication}) es el estándar pensado precisamente para eso: envía audio y video en tiempo real sobre UDP, ya incorpora su propio cifrado y control del tráfico, y los navegadores lo soportan de manera nativa \cite{rfc8825}. Adoptarlo reduciría notablemente el retardo del video frente a MJPEG sobre HTTP, a cambio de un servidor más complejo.
+En este proyecto se usaron los dos, cada uno donde conviene. Los comandos y el estado van por HTTP sobre TCP, porque ahí lo que importa es que la orden llegue y que la respuesta diga la verdad, y porque así el cliente puede ser un navegador cualquiera. El video y la orientación, en cambio, van por UDP: se renuevan muchas veces por segundo y un cuadro atrasado ya no sirve, así que se descarta y se deja paso al siguiente. Esa separación es la que permite que la aplicación de control mantenga el retardo acotado aunque la red inalámbrica pierda paquetes. Como opción a futuro, \textbf{WebRTC} (\emph{Web Real-Time Communication}) es el estándar pensado precisamente para eso: envía audio y video en tiempo real sobre UDP, ya incorpora su propio cifrado y control del tráfico, y los navegadores lo soportan de manera nativa \cite{rfc8825}. Adoptarlo reduciría el retardo del video frente a MJPEG sobre HTTP y añadiría el control de congestión que un envío UDP propio no tiene, a cambio de un servidor más complejo.
 
-En resumen, sobre esta base funcionan los protocolos de aplicación; en este proyecto, HTTP. Cuando un cliente pide una página o envía un comando, la placa se encarga de que los datos viajen y el protocolo de aplicación solo interpreta el contenido, sin que el usuario tenga que preocuparse por direcciones ni por datos perdidos.
+En resumen, sobre esta base funcionan los protocolos de aplicación; en este proyecto, HTTP para los comandos y el estado, y UDP para el video y la actitud. Cuando un cliente pide una página o envía un comando, la placa se encarga de que los datos viajen y el protocolo de aplicación solo interpreta el contenido, sin que el usuario tenga que preocuparse por direcciones ni por datos perdidos.
 
 \subsection{Protocolo de aplicación HTTP y estilo REST}
 
@@ -194,7 +194,7 @@ HTTP (\emph{Hypertext Transfer Protocol}) es el protocolo que usan las páginas 
 
 Los métodos habituales son \texttt{GET}, para pedir información sin cambiarla, y \texttt{POST}, para ejecutar una acción o enviar datos. Esta separación tiene una razón práctica: las acciones con efecto real ---reproducir un sonido, mover los motores--- se envían con \texttt{POST}, así que ningún intermediario pueda repetirlas por accidente desde una copia guardada. La respuesta incluye un código que resume el resultado (todo bien, error del cliente o error del servidor) y un tipo de contenido que dice qué se está enviando: HTML para la página de control, JSON para los datos de estado o JPEG para una fotografía de la cámara.
 
-El estilo REST organiza la aplicación como un conjunto de direcciones que se consultan y se modifican con esos mismos métodos \cite{fielding}. La placa expone así direcciones como \texttt{/status}, \texttt{/play}, \texttt{/control}, \texttt{/drive} y \texttt{/stop}, que el cliente consulta por HTTP.
+El estilo REST organiza la aplicación como un conjunto de direcciones que se consultan y se modifican con esos mismos métodos \cite{fielding}. La placa expone así direcciones como \texttt{/status}, \texttt{/imu}, \texttt{/play}, \texttt{/control}, \texttt{/drive} y \texttt{/stop}, que el cliente consulta por HTTP. La aplicación de Godot usa ese mismo conjunto para gobernar el vehículo y para leer el estado de las luces y del audio.
 
 Por último, el video en vivo se sirve como \emph{MJPEG}: HTTP deja abierta una única respuesta por la que van llegando los cuadros uno tras otro \cite{rfc2046}. Como esa respuesta queda ocupada mientras alguien mira el video, se atiende en su propio puerto para no bloquear el resto de la aplicación.
 
@@ -324,9 +324,9 @@ La Figura~\ref{fig:arquitectura} presenta el ensamblaje completo: la alimentaci�
 \toprule
 \textbf{Placa} & \textbf{MCU} & \textbf{Función en el proyecto} \\
 \midrule
-ESP32-S3-CAM (WROOM-1 N16R8) & ESP32-S3 & Cerebro: Wi-Fi (SoftAP), cámara, audio, sensor de movimiento y control del vehículo; puerto serial con el cuerpo. \\
+ESP32-S3-CAM (WROOM-1 N16R8) & ESP32-S3 & Cerebro: Wi-Fi (SoftAP), cámara, audio, sensor de movimiento y control del vehículo; video y actitud por UDP; puerto serial con el cuerpo. \\
 \midrule
-Raspberry Pi Pico & RP2040 & Cuerpo: 4 PWM a 20 kHz + 8 líneas de dirección + \emph{STBY} para los dos TB6612FNG; vigilante (\emph{dead-man}) de 100 ms. \\
+Raspberry Pi Pico & RP2040 & Cuerpo: 4 PWM a 20 kHz + 8 líneas de dirección + \emph{STBY} para los dos TB6612FNG; vigilante (\emph{dead-man}) de 200 ms. \\
 \midrule
 ESP32 clásico (\texttt{esp32dev}) & ESP32 & Prototipo del Entregable 1; retirado del vehículo. Su lógica de mezcla se portó al cerebro. \\
 \bottomrule
@@ -429,16 +429,18 @@ Luces (salida) & Tira WS2812 y LED RGB integrado & RMT (generador de pulsos) en 
 \end{table}
 
 \subsubsection{Cámara (entrada)}
-El sensor de imagen es un \textbf{OV3660} \cite{ov3660}. Se conecta a la placa por una línea paralela propia de la cámara, y la placa lo configura por una línea de control aparte. El sensor entrega directamente las imágenes ya comprimidas en JPEG, y el ESP32-S3 las va guardando en la PSRAM. Como viene montado girado sobre la placa, el firmware invierte la imagen al encenderla para que se vea derecha. El resultado se ofrece de dos maneras: como video en vivo (\texttt{/stream}, MJPEG) y como fotografía única (\texttt{/capture}). Su función es dar al operador una vista de lo que hay delante y servir de base para desarrollos futuros de visión.
+El sensor de imagen es un \textbf{OV3660} \cite{ov3660}. Se conecta a la placa por una línea paralela propia de la cámara, y la placa lo configura por una línea de control aparte. El sensor entrega directamente las imágenes ya comprimidas en JPEG, y el ESP32-S3 las va guardando en la PSRAM. Como viene montado girado sobre la placa, el firmware invierte la imagen al encenderla para que se vea derecha. El resultado se ofrece por tres vías: como video en vivo MJPEG (\texttt{/stream}), como fotografía única (\texttt{/capture}) y como flujo de cuadros JPEG por UDP en el puerto 82, que es el que consume la aplicación de control. La resolución se elige entre VGA (640$\times$480) y QVGA (320$\times$240), y el tamaño aplicado se lee de vuelta en \texttt{/status}, de modo que la interfaz muestra lo que la placa realmente configuró y no lo que se le pidió. Su función es dar al operador una vista de lo que hay delante y servir de base para desarrollos futuros de visión.
 
 \subsubsection{Audio (salida)}
-El audio se arma en cadena: un convertidor de digital a analógico \textbf{PCM5102A} \cite{pcm5102a} recibe el sonido ya digitalizado por la conexión I\textsuperscript{2}S y lo entrega como una señal de nivel de línea. Por eso se añade un \textbf{amplificador clase D} \cite{pam8302a} y, a su salida, el parlante. El sonido se guarda temporalmente en la memoria interna del microcontrolador para no competir con la PSRAM que usa la cámara, y se reproduce en una tarea aparte para no bloquear el servidor web. La reproducción es bajo demanda: el vehículo solo suena cuando se le pide. Su función es reproducir efectos sonoros y avisos.
+El audio se arma en cadena: un convertidor de digital a analógico \textbf{PCM5102A} \cite{pcm5102a} recibe el sonido ya digitalizado por la conexión I\textsuperscript{2}S y lo entrega como una señal de nivel de línea. Por eso se añade un \textbf{amplificador clase D} \cite{pam8302a} y, a su salida, el parlante. Los sonidos se compilan dentro del firmware como arreglos de muestras en la memoria de programa, no en la PSRAM que usa la cámara: así la cámara y el audio no compiten por el mismo recurso, que era el riesgo principal de la integración. Para que quepan en la partición de la aplicación se guardan como PCM mono de 16 bits a 22.05 kHz, una frecuencia que conserva el habla con claridad y ocupa la mitad que 44.1 kHz; la herramienta \texttt{tools/build\_audio.py} decodifica los originales, los convierte y regenera el arreglo y la tabla de siete clips que el firmware compila. La reproducción corre en una tarea aparte para no bloquear el servidor web y es bajo demanda: el vehículo solo suena cuando se le pide. El volumen se fija en por mil entre 0 y 1000, y la galería de botones se construye a partir de la lista \texttt{clips[]} que publica \texttt{/status}, de modo que añadir un clip no obliga a tocar la interfaz. Su función es reproducir efectos sonoros y avisos.
 
 \subsubsection{Luces (salida)}
-La iluminación usa una tira de LEDs de color controlables \textbf{WS2812} de 5 V \cite{ws2812}, montada en paralelo con el LED RGB que ya trae la placa: ambos reciben los datos por el mismo pin, el GPIO48. Estas tiras requieren una señal de un solo cable en la que la duración de cada pulso debe ser muy exacta, por lo que se genera con el periférico \textbf{RMT} del ESP32-S3 para sincronizarse de manera exacta. Su función principal es dar personalidad al carro, y pueden alumbrar para permitir que la cámara vea en la oscuridad.
+La iluminación usa una tira de LEDs de color controlables \textbf{WS2812} de 5 V \cite{ws2812}, montada en paralelo con el LED RGB que ya trae la placa: ambos reciben los datos por el mismo pin, el GPIO48, así que forman una sola cadena y muestran siempre lo mismo. Estas tiras requieren una señal de un solo cable en la que la duración de cada pulso debe ser muy exacta, por lo que se genera con el periférico \textbf{RMT} del ESP32-S3. La tira quedó con 29 píxeles útiles: el primero se dañó por polaridad invertida antes de corregir el cableado y se puenteó, de modo que los datos entran por el segundo chip. El firmware nombra los píxeles por su posición física ---luz trasera izquierda, centro, derecha, piso y luces delanteras--- y comprueba en tiempo de compilación que los grupos cubran la tira sin huecos ni solapamientos.
+
+El estado de las luces son tres cosas independientes, porque son tres cosas que un conductor hace a la vez: una base de tres posiciones (apagado, posición baja y altas), una intermitencia de emergencia que parpadea las luces laterales en amarillo a 1.25 Hz y una animación de arcoíris en el piso. Las dos últimas se aplican \emph{encima} de la base en vez de reemplazarla, así que encender la emergencia mientras se conduce ilumina el coche con normalidad y añade el parpadeo, y la emergencia funciona incluso con la base apagada. Hay además un techo de brillo de 128 sobre 255 que ningún modo ni comando puede superar: con todo encendido en blanco el consumo estimado ronda los 180 mA, dentro de lo que entrega un puerto USB. Su función principal es dar personalidad al carro, y las luces delanteras permiten que la cámara vea en la oscuridad.
 
 \subsubsection{Sensor de movimiento (entrada)}
-El sensor de movimiento es un \textbf{BMI160} de 6 ejes ---acelerómetro y giroscopio--- \cite{bmi160}. Se comunica por I\textsuperscript{2}C. Toma 200 muestras por segundo, con un alcance de $\pm 8$~g en las aceleraciones y $\pm 2000$~ grados/segundo en el giro, para saber cómo está orientado e inclinado el vehículo. Estos datos permiten mostrar una interfaz de inclinación en la aplicación de Godot.
+El sensor de movimiento es un \textbf{BMI160} de 6 ejes ---acelerómetro y giroscopio--- \cite{bmi160}. Se comunica por I\textsuperscript{2}C. Toma 200 muestras por segundo, con un alcance de $\pm 8$~g en las aceleraciones y $\pm 2000$~ grados/segundo en el giro, para saber cómo está orientado e inclinado el vehículo. El cerebro publica la actitud ---pitch y roll--- y la envía a 50 Hz por el mismo enlace UDP del video, en un datagrama único; se manda siempre la muestra más reciente y se descarta la que no alcanzó su turno, porque una actitud atrasada vale menos que ninguna. Ese flujo alimenta el horizonte artificial de la aplicación de Godot.
 
 \subsection{Primera etapa del firmware: rutina avance--giro--detención}
 
@@ -500,16 +502,57 @@ Task tasks[] = {
 Con esa primera versión ya validada, el firmware se reorganizó en los dos programas que se describen a continuación: uno para el cerebro y otro para el cuerpo del vehículo.
 
 \subsection{Firmware del cerebro (ESP32-S3)}
-El cerebro ejecuta un único programa, escrito en C++ sobre el entorno de Arduino-ESP32, que reúne la red, la cámara, el audio, el sensor de movimiento y el control del vehículo. Al arrancar, inicializa la cámara, crea su propia red Wi-Fi y levanta dos servidores web: uno para la página y los comandos, y otro, en un puerto aparte, para el video en vivo. A partir de ahí conviven varias tareas: la atención del servidor web, la reproducción de audio ---que solo suena cuando se pide--- y la lectura del sensor de movimiento 200 veces por segundo. El control del vehículo toma las órdenes que llegan por la interfaz multimedia y las traduce en cuatro niveles de potencia que envía al controlador de los motores por el puerto serial a 100 Hz.
+El cerebro ejecuta un único programa, escrito en C++ sobre el entorno de Arduino-ESP32, que reúne la red, la cámara, el audio, el sensor de movimiento y el control del vehículo. Al arrancar, inicializa la cámara, crea su propia red Wi-Fi ---el punto de acceso se llama \texttt{KAIROS 95}--- y levanta dos servidores web: uno para la página y los comandos, y otro, en un puerto aparte, para el video en vivo. A ellos se suma el socket UDP que entrega el video y la actitud a la aplicación. Sobre esa base conviven varias tareas repartidas entre los dos núcleos: la atención de los servidores web y el audio, la captura y el envío de cuadros, y la lectura del sensor de movimiento 200 veces por segundo. Una tarea aparte envía además una trama al cuerpo cada 10 ms, a 100 Hz, y lo hace a tasa fija aunque no haya nadie conduciendo, porque el vigilante del cuerpo se dispara cuando dejan de llegar tramas y no cuando el vehículo está quieto.
+
+Las órdenes de conducción llegan por \texttt{/drive} con tres valores en por mil: \texttt{th} (adelante y atrás), \texttt{turn} (giro) y \texttt{twist} (reparto entre el eje delantero y el trasero). El cerebro los mezcla con la misma aritmética del prototipo original para obtener los cuatro niveles de los motores, de modo que la mezcla queda como una propiedad del coche y no de la placa que en ese momento tenga los pines. \texttt{/stop} admite tres modos: \texttt{brake}, que es el de por defecto y en el que el puente H frena; \texttt{coast}, en el que las ruedas quedan libres; y \texttt{disable}, en el que se baja la habilitación. El sistema arranca en este último, así que los motores no se energizan hasta que llega una orden.
+
+Sobre esa base hay un segundo vigilante, propio del cerebro y distinto del que tiene el cuerpo: si pasan 400 ms sin una orden de conducción, el cerebro ordena frenar por su cuenta. El vigilante del cuerpo no puede cubrir ese caso, porque el cerebro sigue enviando tramas aunque el teléfono se haya dormido o se haya salido del alcance; desde el punto de vista del cuerpo no ha cambiado nada. El plazo se fijó en cuatro veces el intervalo con el que los clientes reenvían una orden mientras se mantiene pulsada, de modo que tres reenvíos perdidos o retrasados todavía no detienen el coche. La frenada que dispara este vigilante no se suaviza: es una orden de seguridad y para el vehículo de inmediato, mientras que la vuelta a la marcha sí respeta el límite de pendiente del cuerpo.
+
+La Tabla~\ref{tab:api} resume la interfaz HTTP que expone el cerebro y que consumen los dos clientes.
+
+\begin{table}[htbp]
+\centering
+\caption{Interfaz HTTP del cerebro y función de cada ruta.}
+\label{tab:api}
+\small
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{2.4cm}>{\raggedright\arraybackslash}p{1.5cm}>{\raggedright\arraybackslash}p{3.8cm}@{}}
+\toprule
+\textbf{Ruta} & \textbf{Método} & \textbf{Función} \\
+\midrule
+\texttt{/} & GET & Página de control \\
+\midrule
+\texttt{/stream} & GET & Video en vivo MJPEG (puerto 81) \\
+\midrule
+\texttt{/capture} & GET & Una fotografía JPEG \\
+\midrule
+\texttt{/status} & GET & Estado de la cámara, el audio, las luces y el enlace \\
+\midrule
+\texttt{/imu} & GET & Última muestra de actitud \\
+\midrule
+\texttt{/drive} & GET, POST & Conducción: \texttt{th}, \texttt{turn} y \texttt{twist} en por mil \\
+\midrule
+\texttt{/stop} & GET, POST & Parada: \texttt{mode=brake}, \texttt{coast} o \texttt{disable} \\
+\midrule
+\texttt{/control} & GET, POST & Cámara, luces, color y volumen \\
+\midrule
+\texttt{/play} & GET, POST & Sonido: \texttt{src=<clip>} y \texttt{vol=0..1000} \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \subsection{Firmware del cuerpo (RP2040)}
-El cuerpo recibe esos cuatro niveles y genera con el propio hardware del chip las señales de los dos puentes H: cuatro líneas PWM a 20 kHz y ocho líneas de dirección, más una línea de habilitación común. Su responsabilidad principal es la seguridad: si dejan de llegar nuevos niveles durante 100 ms ---porque el cerebro se reinicie, el cable se suelte o el teléfono pierda la conexión---, baja la línea de habilitación y los motores se detienen. También limita cuánto puede cambiar la potencia de un instante al siguiente, así que una orden dañada por ruido no pueda producir una aceleración brusca. El cuerpo no decide nada por sí mismo: obedece esos niveles y vigila que sigan llegando.
+El cuerpo recibe esos cuatro niveles y genera con el propio hardware del chip las señales de los dos puentes H: cuatro líneas PWM a 20 kHz y ocho líneas de dirección, más una línea de habilitación común. Su responsabilidad principal es la seguridad: si dejan de llegar nuevas órdenes durante 200 ms ---porque el cerebro se reinicie, el cable se suelte o el teléfono pierda la conexión---, baja la línea de habilitación y los motores se detienen. El plazo se subió de 100 a 200 ms al comprobar sobre el prototipo que el valor anterior disparaba frenadas espurias con el enlace sano. También limita cuánto puede cambiar la potencia de un instante al siguiente, a 100 por mil por trama, así que una orden dañada por ruido no puede producir una aceleración brusca. El cuerpo no decide nada por sí mismo: obedece esas órdenes y vigila que sigan llegando.
 
 \subsection{Protocolo de comunicación entre cerebro y cuerpo}
-La comunicación usa el puerto serial a 921600 baudios y un formato de trama fijo para que ambos programas se entiendan sin ambigüedad. El cerebro envía a 100 Hz una trama de 13 bytes con el tipo de orden, un contador de secuencia y los cuatro niveles, y además un byte de verificación (CRC) que permite descartar cualquier trama alterada por ruido. El cuerpo responde a 10 Hz con una trama de estado que informa si la comunicación está sana y si el vigilante está armado. Ese byte de verificación es lo que hace robusto el enlace: en las pruebas se mantuvo en cero errores durante miles de tramas.
+La comunicación usa el puerto serial a 921600 baudios y un formato de trama fijo para que ambos programas se entiendan sin ambigüedad. El cerebro envía a 100 Hz una trama de 13 bytes con el tipo de orden, un contador de secuencia y los cuatro niveles, y además un byte de verificación (CRC-8) que permite descartar cualquier trama alterada por ruido. Hay cinco tipos de orden ---conducir, frenar, rueda libre, deshabilitar y un latido de vida---, y solo los cuatro primeros alimentan el vigilante: un latido no mueve nada, así que no puede renovar un plazo que existe justamente para detener el coche. El cuerpo responde a 10 Hz con una trama de estado de 11 bytes que informa si la comunicación está sana y si el vigilante está armado. Ese byte de verificación es lo que hace robusto el enlace: en las pruebas se mantuvo en cero errores durante miles de tramas.
+
+El contrato del protocolo vive en un solo archivo de cabecera, escrito sin dependencias de ninguna de las dos plataformas, y esa independencia tiene una consecuencia útil: el mismo código se compila también en el computador. Las pruebas automáticas cubren el CRC, la ida y vuelta de todas las tramas, la corrupción de cada bit, la búsqueda de sincronía en ruido, la mezcla y la convención de giro, con 338 comprobaciones que pasan sin fallos.
 
 \subsection{Interfaz de usuario}
-El usuario gobierna el vehículo desde una página web que la propia placa sirve, sin instalar nada: basta con unirse a su red Wi-Fi y abrir la dirección en el navegador. La página muestra el video en vivo y ofrece los mandos de conducción, los botones de sonido y un panel con la inclinación medida por el sensor. La Figura~\ref{fig:interfaz} la muestra tal como se presenta en un teléfono.
+El vehículo ofrece dos clientes sobre la misma interfaz de red: una página web que sirve la propia placa, pensada para entrar desde cualquier navegador sin instalar nada, y una aplicación de escritorio y móvil construida en el motor de juegos Godot \cite{godot}, pensada para conducir con dos pulgares y para recibir el video con el menor retardo posible. Los dos envían los mismos comandos HTTP, así que el estado del coche es uno solo: lo que se cambia desde la página se refleja en la aplicación, y al contrario.
+
+\subsubsection{Página web servida por el vehículo}
+El usuario puede gobernar el vehículo desde la página que la propia placa sirve, sin instalar nada: basta con unirse a su red Wi-Fi y abrir la dirección en el navegador. La página muestra el video en vivo y ofrece los mandos de conducción, los botones de sonido con su nivel de volumen, los controles de luces y un panel con la inclinación medida por el sensor. La Figura~\ref{fig:interfaz} la muestra tal como se presenta en un teléfono.
 
 \begin{figure}[t]
     \centering
@@ -518,7 +561,20 @@ El usuario gobierna el vehículo desde una página web que la propia placa sirve
     \label{fig:interfaz}
 \end{figure}
 
-Como primer paso hacia la interacción con un motor de juegos, se desarrolló un cliente en Godot que se comunica por HTTP con la placa; su integración completa con el vehículo quedó como trabajo futuro.
+\subsubsection{Aplicación de control en Godot}
+La aplicación es un proyecto de Godot 4.7 con el renderizador de compatibilidad, que es el que mejor se ajusta a una interfaz 2D y permite correr en equipos modestos y en teléfonos. Su lazo principal tiene tres partes: recibir el video y la actitud, capturar la intención del usuario y enviar las órdenes.
+
+La recepción usa el enlace UDP ya descrito. Cada datagrama trae una cabecera de 20 bytes que lo describe por completo ---tipo de carga, número de cuadro, tamaño total, índice y cuenta de fragmentos---, así que el cliente puede empezar a escuchar a mitad de un cuadro sin esperar un paquete de inicio ni un paquete de cierre. La aplicación reensambla los fragmentos de un cuadro JPEG, descarta el cuadro entero si falta uno y cuenta los fragmentos perdidos para informar la tasa de pérdida; nunca decodifica un cuadro incompleto, de modo que una pérdida se ve como un cuadro menos y no como una imagen partida. Se suscribe enviando un datagrama corto al puerto 82 y lo repite cada medio segundo; la placa deja de enviar dos segundos después del último, así que un cliente que desaparece no deja un flujo abierto. El mismo socket entrega las muestras de actitud a 50 Hz. La lectura del video quedó detrás de una clase base común, con una implementación UDP y otra MJPEG sobre HTTP: la escena principal usa la primera y la segunda sirve para diagnosticar el enlace cuando se sospecha de él.
+
+Los mandos son dos sticks virtuales simultáneos, uno para el acelerador y otro para la dirección. La base de cada stick aparece donde cae el dedo en vez de estar fija en un punto de la pantalla, cada stick reclama su propio dedo y cada uno restringe su eje, de modo que dos pulgares pueden trabajar a la vez sin que uno pise al otro ni una diagonal cuele una orden que ese control no debía producir. La deflexión se convierte en una orden en por mil, con zona muerta del 12\,\% y escala proporcional: media deflexión pide media potencia. Mientras un stick está desviado, la aplicación reenvía la orden cada 100 ms, y al soltarlo ---o al perder el video--- manda \texttt{/stop} de inmediato, sin esperar a que venza el vigilante.
+
+Sobre el video se dibuja un horizonte artificial con escala de banco y escalera de cabeceo. La superposición se ubica con la óptica de la cámara y no a ojo: un lente rectilíneo proyecta una dirección que se aparta del eje óptico una distancia proporcional a la tangente del ángulo, así que una escala lineal en grados solo coincidiría cerca del centro, que es justo donde un horizonte resulta menos útil. La actitud que no se ha renovado en un segundo deja de dibujarse, para que una muestra detenida no deje en pantalla un horizonte que parece válido.
+
+Encima del video se aplica una corrección de color escrita como sombreador. El sensor entrega una imagen de bajo contraste con el negro levantado, y sus propios controles de brillo y contraste no lo corrigen porque allí el contraste es una ganancia de exposición que sube los negros en vez de hundirlos. El sombreador quita ese pedestal, ajusta el gamma, el contraste y la saturación, y recupera el brillo con una ganancia final; todo ocurre en el espacio de color de pantalla, donde no cuesta ancho de banda y se puede ajustar sin regrabar el firmware.
+
+El resto de la interfaz completa el estado del coche. La galería de sonidos se construye desde la lista \texttt{clips[]} de \texttt{/status}, con un indicador del clip que está sonando; el volumen se ajusta con un deslizador de 0 a 100\,\% cuyas peticiones se agrupan mientras se arrastra, porque un envío por píxel saturaría un enlace cuyo viaje de ida y vuelta ronda los 150 ms; las luces ofrecen las tres posiciones de base además de la emergencia y el arcoíris, leyendo siempre el estado real de la placa para no mostrar un interruptor que no corresponde; y el botón de resolución alterna VGA y QVGA leyendo de vuelta el tamaño que la placa aplicó. Una línea de estadísticas muestra cuadros por segundo, cuadros descartados y pérdida de fragmentos, que es la información con la que se decide si el enlace sostiene la calidad elegida.
+
+La aplicación se compila para Windows, macOS, Linux y Android con los cuatro presets del proyecto, y esas compilaciones de prueba se publican como versiones del repositorio junto con un archivo de sumas de verificación. Con eso, el vehículo se puede operar desde un computador o desde un teléfono con un binario ya armado, sin necesidad de abrir el editor de Godot.
 
 \section{Resultados}
 
@@ -562,7 +618,7 @@ brain  --  ESP32-S3 camera + audio + AP (cam-test merged in)
 \end{lstlisting}
 
 \subsection{Validación del audio}
-La cadena de audio ---convertidor de digital a analógico, amplificador y parlante--- reprodujo correctamente los tonos de prueba y un fragmento de audio. La prueba decisiva consistió en reproducir sonido con el video en marcha, y el Listado~\ref{lst:audio} registra esas reproducciones. La pieza de audio terminó en 4097 ms frente a los 4136 ms esperados, y los tonos en 1031 ms frente a 1020 ms: en ambos casos la diferencia ronda el 1\,\%, sin cortes ni interrupciones. Esto confirma que la cámara y el audio pueden funcionar a la vez compartiendo la memoria PSRAM sin conflictos.
+La cadena de audio ---convertidor de digital a analógico, amplificador y parlante--- reprodujo correctamente los tonos de prueba y un fragmento de audio. La prueba decisiva consistió en reproducir sonido con el video en marcha, y el Listado~\ref{lst:audio} registra esas reproducciones. La pieza de audio terminó en 4097 ms frente a los 4136 ms esperados, y los tonos en 1031 ms frente a 1020 ms: en ambos casos la diferencia ronda el 1\,\%, sin cortes ni interrupciones. Esto confirma que la cámara y el audio pueden funcionar a la vez compartiendo la memoria PSRAM sin conflictos. La captura corresponde a la primera versión del reproductor, que trabajaba a 44.1 kHz; después los clips se regeneraron a 22.05 kHz para que cupieran en la partición de la aplicación, y la tabla generada registra duraciones entre 2.3 s y 7.4 s para los siete sonidos.
 
 \begin{lstlisting}[style=consola, caption={Registro de reproducción de audio con el video en marcha.}, label={lst:audio}]
 [http] /play: 'src=beeps'
@@ -585,7 +641,7 @@ El sensor respondió en el bus I\textsuperscript{2}C en su dirección esperada y
 \end{lstlisting}
 
 \subsection{Validación del enlace y del vigilante}
-Con ambos microcontroladores conectados, el cerebro envió tramas a 100 Hz y recibió las respuestas de estado a 10 Hz. Del lado del cuerpo, el contador de tramas descartadas por CRC se mantuvo en cero; del lado del cerebro se registró una sola trama descartada en más de trece mil, lo que confirma la robustez del enlace. El vigilante del cuerpo se probó a propósito, y el Listado~\ref{lst:deadman} recoge el momento exacto del disparo: al detener la comunicación desde el cerebro, el cuerpo bajó la habilitación en menos de 100 ms y los motores quedaron sin par, y al reanudarse la comunicación el sistema se recuperó por sí solo.
+Con ambos microcontroladores conectados, el cerebro envió tramas a 100 Hz y recibió las respuestas de estado a 10 Hz. Del lado del cuerpo, el contador de tramas descartadas por CRC se mantuvo en cero; del lado del cerebro se registró una sola trama descartada en más de trece mil, lo que confirma la robustez del enlace. El vigilante del cuerpo se probó a propósito, y el Listado~\ref{lst:deadman} recoge el momento exacto del disparo: al detener la comunicación desde el cerebro, el cuerpo bajó la habilitación y los motores quedaron sin par, y al reanudarse la comunicación el sistema se recuperó por sí solo. La captura corresponde a la versión con el plazo de 100 ms, que después se subió a 200 ms tras observar frenadas espurias con el enlace sano; el comportamiento ante la pérdida no cambió, solo el margen.
 
 \begin{lstlisting}[style=consola, caption={Disparo del vigilante al interrumpir la comunicación desde el cerebro.}, label={lst:deadman}]
 [link]  200 frames/2s  ok 14606  crc 0  timeouts 0  stby 0  seq 13 type 04  duty    +0    +0    +0    +0
@@ -595,11 +651,17 @@ Con ambos microcontroladores conectados, el cerebro envió tramas a 100 Hz y rec
 [link]  160 frames/2s  ok 14766  crc 0  timeouts 1  stby 0  seq 173 type 04  duty    +0    +0    +0    +0
 \end{lstlisting}
 
+\subsection{Validación de la aplicación de control}
+La aplicación se probó sobre la maqueta y no solo en el editor. Con el equipo unido a la red del vehículo, abrió el flujo UDP, reensambló los cuadros y mostró el video con el horizonte artificial alimentado por las muestras de actitud. Por \texttt{/drive}, los dos sticks gobernaron el vehículo; la galería de sonidos, el volumen y las luces reflejaron el estado real que publicaba la placa. Las convenciones de signo de la dirección se verificaron conduciendo el coche y corrigiéndolas sobre la marcha, que es la única prueba concluyente para algo que, si está invertido, se nota solo cuando el vehículo ya se alejó. El panel de estadísticas permitió seguir la tasa de cuadros y la pérdida de fragmentos, y la política de descartar el cuadro incompleto se refleja como un cuadro menos en la tasa, nunca como una imagen partida, porque no se decodifica un cuadro al que le falte un fragmento.
+
+También se verificaron las compilaciones. Los cuatro presets exportan sin errores: Windows produce un ejecutable con el paquete incrustado, macOS un paquete universal para arm64 y x86-64, Linux un ejecutable que carga la escena principal ---comprobado en modo sin interfaz--- y Android un APK para arm64-v8a con \texttt{targetSdk} 36, firmado con la clave de depuración, que declara los permisos de red que la aplicación necesita. Los cuatro artefactos se publicaron como una versión del repositorio junto con sus sumas de verificación.
+
 \section{Limitaciones y trabajo futuro}
 \begin{itemize}
-\item La integración con el motor de juegos quedó incompleta: se alcanzó un cliente preliminar en Godot que se comunica por HTTP con la placa, pero la interacción completa ---gobernar el vehículo y visualizar su estado desde la aplicación--- no se terminó por falta de tiempo.
+\item La aplicación de control se queda en la teleoperación: todavía no usa el video para asistir al conductor ni la actitud para corregir la trayectoria. Además, sus compilaciones van firmadas con la clave de depuración de Godot y no con certificados de distribución, así que macOS exige abrirlas con clic derecho y Android pide habilitar la instalación de orígenes desconocidos.
 \item El vehículo es teleoperado: todavía no ejecuta un control autónomo a partir de la cámara o del sensor de movimiento.
-\item La transmisión de video usa HTTP sobre TCP, cómodo, aunque se puede mejorar para tiempo real; una migración a UDP o a WebRTC reduciría notablemente el retardo.
+\item La página web sigue sirviendo el video como MJPEG sobre TCP, cómodo para un navegador pero con retardo acumulable; la aplicación ya usa UDP. El paso siguiente es WebRTC, que añadiría cifrado y control de congestión y permitiría ver el video en tiempo real desde el propio navegador.
+\item El punto de acceso se protege con una clave compartida y los comandos viajan sin cifrar, porque el sistema está pensado para operarse en un entorno controlado y a corta distancia.
 \item El sensor de movimiento no incluye brújula, así que no ofrece orientación absoluta y el giro calculado se desvía con el tiempo.
 \item La red propia del vehículo no ofrece Internet, y en algunos teléfonos con datos móviles activos la página no carga hasta desactivarlos.
 \item Sería bueno añadir una resistencia en serie en cada línea del enlace entre las dos placas, para proteger contra el encendido asimétrico.
@@ -608,9 +670,9 @@ Con ambos microcontroladores conectados, el cerebro envió tramas a 100 Hz y rec
 \section{Conclusiones}
 Se integraron con éxito los componentes electrónicos y multimedia de un vehículo a control remoto: el control de los cuatro motores por PWM y dirección, la cámara con transmisión de video, la salida de audio y un sensor de movimiento de seis ejes. Este fue el resultado más sólido del proyecto. La decisión de diseño más importante fue repartir el trabajo entre dos microcontroladores con responsabilidades separadas: el cerebro concentra la inteligencia y los periféricos, y el cuerpo se encarga de la etapa de potencia y de una parada de seguridad. Esa división permitió superar la limitación de pines del cerebro sin renunciar a la cámara, el audio ni la red.
 
-La integración de los sensores y de los elementos multimedia fue más profunda de lo que planteaba el alcance inicial, que apuntaba a un vehículo más simple. En cambio, la conexión con un motor de juegos quedó por detrás de lo previsto: se alcanzó a desarrollar un cliente preliminar en Godot que se comunica por HTTP con la placa, pero la interacción completa ---gobernar el vehículo y visualizar su estado desde la aplicación--- no se terminó por falta de tiempo. Ese es el principal frente abierto.
+La conexión con un motor de juegos, que al corte anterior iba por detrás de lo previsto, se completó: la aplicación en Godot recibe el video y la actitud por UDP, gobierna el vehículo con dos sticks simultáneos, refleja el estado de las luces y del audio, y se compila para escritorio y para Android. El cambio de transporte fue la decisión que más se notó, porque el video por UDP dejó de acumular retardo y permitió que el horizonte respondiera a lo que hace el coche.
 
-En cuanto al resto de los objetivos, los resultados son positivos. El prototipo se desplaza, los subsistemas de entrada y salida responden, y el enlace entre ambos microcontroladores es fiable y seguro ante fallos, con el vigilante de comunicación disparando en menos de 100 ms. El análisis cuantitativo de las magnitudes mecánicas y eléctricas se contrastó con las mediciones y quedó dentro de lo previsto. Quedan como trabajo futuro cerrar la integración con el motor de juegos, migrar el video a un transporte de tiempo real y avanzar hacia un control autónomo.
+En cuanto al resto de los objetivos, los resultados son positivos. El prototipo se desplaza, los subsistemas de entrada y salida responden, y el enlace entre ambos microcontroladores es fiable y seguro ante fallos: el vigilante del cuerpo dispara al vencer su plazo de 200 ms y un segundo vigilante en el cerebro cubre la pérdida de las órdenes cuando es el cliente el que desaparece. El análisis cuantitativo de las magnitudes mecánicas y eléctricas se contrastó con las mediciones y quedó dentro de lo previsto. Quedan como trabajo futuro el control autónomo a partir de la cámara y de la actitud, el paso del video a WebRTC y la firma de distribución de las aplicaciones.
 
 \section{Enlace al repositorio}
 
@@ -620,7 +682,7 @@ El código fuente completo ---el firmware de las dos placas, el esquema eléctri
 \url{https://github.com/botero-dev/usbbog-realidad-mixta}
 \end{center}
 
-El repositorio se organiza en cinco carpetas: \texttt{firmware/} reúne los proyectos de PlatformIO (\texttt{brain/} para el ESP32-S3, \texttt{pico\_body/} para el RP2040 y \texttt{network-test/} para las pruebas de red), \texttt{hardware/} contiene el esquema eléctrico generado y su lista de conexiones, \texttt{game-app/} la aplicación de Godot, \texttt{docs/} la documentación de diseño y \texttt{report/} este documento.
+El repositorio se organiza en cinco carpetas: \texttt{firmware/} reúne los proyectos de PlatformIO (\texttt{brain/} para el ESP32-S3, \texttt{pico\_body/} para el RP2040 y \texttt{network-test/} para las pruebas de red), con las pruebas automáticas del enlace en \texttt{brain/tools/}; \texttt{hardware/} contiene el esquema eléctrico generado y su lista de conexiones; \texttt{game-app/} la aplicación de Godot, con sus cuatro presets de exportación; \texttt{docs/} la documentación de diseño y \texttt{report/} este documento. Las compilaciones de prueba de la aplicación se publican en la sección de versiones del mismo repositorio, acompañadas de un archivo de sumas de verificación.
 
 Las demostraciones del vehículo en funcionamiento están en la lista de reproducción \url{https://www.youtube.com/playlist?list=PLXGvmgLpp-MQ}.
 
@@ -689,6 +751,8 @@ Las demostraciones del vehículo en funcionamiento están en la lista de reprodu
 \bibitem{ws2812} Worldsemi, ``WS2812B: Intelligent control LED integrated light source,'' Datasheet. [Online]. Available: https://www.worldsemi.com/
 
 \bibitem{kicad} KiCad Development Team, ``KiCad E.D.A. Documentation,'' 2024. [Online]. Available: https://docs.kicad.org/
+
+\bibitem{godot} Godot Engine contributors, ``Godot Engine documentation: using the engine, GDScript and the export system,'' 2026. [Online]. Available: https://docs.godotengine.org/
 
 \end{thebibliography}
 
