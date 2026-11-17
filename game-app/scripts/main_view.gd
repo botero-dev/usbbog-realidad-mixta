@@ -69,10 +69,10 @@ var _drive_busy := false
 var _drive_stop_pending := false
 var _drive_next_ms := 0
 
-## Full deflection in per-mille of the mixer. The board's own page scales its whole
-## range from a slider; this is the equivalent ceiling, and it is deliberately well
-## under 1000 because the car reaches full speed long before the stick does.
-@export var max_drive_permille := 600
+## Full deflection in per-mille of the mixer -- the same scale the board's page gets
+## from its speed slider, whose maximum is 1000. The stick is analogue, so a partial
+## deflection commands proportionally less.
+@export var max_drive_permille := 1000
 ## How often a held stick is re-sent. Must stay well inside the brain's 400 ms
 ## control watchdog (see motor_link.h), which brakes the car by itself if commands
 ## stop arriving -- that is the safety net, not the normal stop path.
